@@ -1,0 +1,16 @@
+# 编译产物
+*.o
+*.rel.o
+*.dev.o
+*.elf
+*.epf
+xj380_emu
+xj380_emu.exe
+test_unicorn
+test_xj380.c
+
+# 调试
+*.swp
+*.swo
+*~
+.DS_Store

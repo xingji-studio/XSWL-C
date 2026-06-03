@@ -1,0 +1,88 @@
+# XJ380 Emulator — Windows Cygwin Makefile
+#
+#   make -f Makefile.Windows          TUI only
+#   make -f Makefile.Windows gui      TUI + SDL2 GUI
+#   make -f Makefile.Windows release  g++ -O3 -flto
+#
+# Cygwin 依赖: gcc-core gcc-g++ make libunicorn-devel libSDL2-devel libSDL2_image-devel
+
+TARGET    = xj380_emu.exe
+TEST_ELF  = test_xj380.elf
+TUI_ELF   = test_tui.elf
+
+# ---- SDL2 / Unicorn 路径 ----
+SDL2_CFLAGS := $(shell pkg-config --cflags sdl2 SDL2_image 2>/dev/null || echo "-I/usr/include/SDL2")
+SDL2_LIBS   := $(shell pkg-config --libs   sdl2 SDL2_image 2>/dev/null || echo "-lSDL2 -lSDL2_image")
+UNI_CFLAGS  := $(shell pkg-config --cflags unicorn 2>/dev/null || echo "")
+UNI_LIBS    := $(shell pkg-config --libs   unicorn 2>/dev/null || echo "-lunicorn")
+
+INC_TUI   = $(UNI_CFLAGS)
+INC_GUI   = $(UNI_CFLAGS) $(SDL2_CFLAGS)
+LIBS_TUI  = $(UNI_LIBS) -lm
+LIBS_GUI  = $(UNI_LIBS) $(SDL2_LIBS) -lm
+
+CC        = gcc
+CXX       = g++
+
+# 和 Linux 版对齐的警告 (去掉 -Wconversion: SDL2 头文件会产生大量噪音)
+WARN      = -std=c11 -Wall -Wextra \
+            -Wshadow -Wstrict-prototypes -Wmissing-prototypes \
+            -Wno-pointer-to-int-cast
+
+# ============================================================
+# 默认: TUI only (-O2)
+# ============================================================
+.PHONY: all
+all: CFLAGS = $(WARN) -O2 -DNDEBUG
+all: $(TARGET)
+
+$(TARGET): main.c xj380_emu.c xj380_emu.h
+	$(CC) $(CFLAGS) $(INC_TUI) -c main.c -o main.o
+	$(CC) $(CFLAGS) $(INC_TUI) -c xj380_emu.c -o xj380_emu.o
+	$(CC) $(CFLAGS) -o $@ main.o xj380_emu.o $(LIBS_TUI)
+
+# ============================================================
+# GUI: TUI + SDL2 (-O2)
+# ============================================================
+.PHONY: gui
+gui: CFLAGS = $(WARN) -O2 -DNDEBUG -DXJ380_GUI
+gui:
+	$(CC) $(CFLAGS) $(INC_GUI) -c main.c -o main.o
+	$(CC) $(CFLAGS) $(INC_GUI) -c xj380_emu.c -o xj380_emu.o
+	$(CC) $(CFLAGS) $(INC_GUI) -c xj380_gui.c -o xj380_gui.o
+	$(CC) $(CFLAGS) -o $(TARGET) main.o xj380_emu.o xj380_gui.o $(LIBS_GUI)
+
+# ============================================================
+# Release: g++ 链接 -O3 -flto
+# ============================================================
+.PHONY: release
+release:
+	gcc $(WARN) -O3 -flto -funroll-loops -fomit-frame-pointer -DNDEBUG \
+	    $(INC_GUI) -DXJ380_GUI -c main.c -o main.rel.o
+	gcc $(WARN) -O3 -flto -funroll-loops -fomit-frame-pointer -DNDEBUG \
+	    $(INC_GUI) -DXJ380_GUI -c xj380_emu.c -o xj380_emu.rel.o
+	gcc $(WARN) -O3 -flto -funroll-loops -fomit-frame-pointer -DNDEBUG \
+	    $(INC_GUI) -DXJ380_GUI -c xj380_gui.c -o xj380_gui.rel.o
+	g++ -O3 -flto -funroll-loops -fomit-frame-pointer -DNDEBUG \
+	    -o $(TARGET) main.rel.o xj380_emu.rel.o xj380_gui.rel.o $(LIBS_GUI)
+	rm -f *.rel.o
+
+# ============================================================
+# 测试
+# ============================================================
+$(TEST_ELF): test_xj380.S
+	gcc -m64 -nostdlib -static -no-pie -o $@ $< -Wl,-Ttext=0x200000
+
+$(TUI_ELF): test_tui.S
+	gcc -m64 -nostdlib -static -no-pie -o $@ $< -Wl,-Ttext=0x200000
+
+.PHONY: test test-tui
+test: $(TARGET) $(TEST_ELF)
+	./$(TARGET) $(TEST_ELF)
+
+test-tui: $(TARGET) $(TUI_ELF)
+	./$(TARGET) $(TUI_ELF)
+
+.PHONY: clean
+clean:
+	rm -f $(TARGET) $(TEST_ELF) $(TUI_ELF) *.o *.rel.o
