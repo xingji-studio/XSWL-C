@@ -126,8 +126,9 @@ int xj380_mem_write(xj380_emu_t *emu, uint64_t addr, const void *src, size_t len
 static uint64_t emu_brk(xj380_emu_t *emu, size_t size) {
     uint64_t addr = emu->brk_addr;
     uint64_t pagesz = (size + 0xFFFULL) & ~0xFFFULL;
-    /* 堆已预映射, uc_mem_map 可能失败 → 忽略错误 */
-    (void)uc_mem_map(emu->uc, addr, pagesz, UC_PROT_READ | UC_PROT_WRITE);
+    /* 按需映射: 跳过已映射区域 (UC_ERR_MAP) */
+    uc_err err = uc_mem_map(emu->uc, addr, pagesz, UC_PROT_READ | UC_PROT_WRITE);
+    (void)err;  /* 失败通常是已映射, 无害 */
     emu->brk_addr += pagesz;
     return addr;
 }
@@ -154,13 +155,18 @@ static int vfs_ensure(xj380_emu_t *emu) {
 }
 
 static int vfs_import_host(xj380_emu_t *emu, const char *vpath, const char *hpath) {
-    vfs_ensure(emu);
+    if (vfs_ensure(emu) != 0) return -1;
     FILE *fp = fopen(hpath, "rb");
     if (!fp) return -1;
     fseek(fp, 0, SEEK_END);
     long sz = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    uint8_t *d = malloc((size_t)sz);
+    uint8_t *d = NULL;
+    if (sz > 0) {
+        d = malloc((size_t)sz);
+        if (!d) { fclose(fp); return -1; }
+        (void)fread(d, 1, (size_t)sz, fp);
+    }
     if (!d) { fclose(fp); return -1; }
     (void)fread(d, 1, (size_t)sz, fp);
     fclose(fp);
@@ -174,7 +180,7 @@ static int vfs_import_host(xj380_emu_t *emu, const char *vpath, const char *hpat
 
 static int vfs_create(xj380_emu_t *emu, const char *path, bool is_dir) {
     if (vfs_find(emu, path) >= 0) return -1;
-    vfs_ensure(emu);
+    if (vfs_ensure(emu) != 0) return -1;
     int idx = emu->vfs_count++;
     strncpy(emu->vfs[idx].path, path, VFS_PATH_MAX - 1);
     emu->vfs[idx].data   = NULL;
@@ -218,9 +224,8 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
 
     emu->entry_point = eh.e_entry ? eh.e_entry : XJ380_TEXT_BASE;
 
-    /* 映射固定区域（代码段交给 ELF PT_LOAD 映射） */
+    /* 映射固定区域（堆改为按需映射, 不再预分配 16MB） */
     uc_mem_map(emu->uc, XJ380_STACK_BASE, XJ380_STACK_SIZE, UC_PROT_READ | UC_PROT_WRITE);
-    uc_mem_map(emu->uc, XJ380_HEAP_BASE,  XJ380_HEAP_SIZE,  UC_PROT_READ | UC_PROT_WRITE);
     uc_mem_map(emu->uc, XJ380_TRAMP_BASE, XJ380_TRAMP_SIZE, UC_PROT_READ | UC_PROT_EXEC);
     uc_mem_map(emu->uc, 0xFFFFF000, 0x1000, UC_PROT_READ | UC_PROT_EXEC); /* 事件回调返回 */
     emu->brk_addr = XJ380_HEAP_BASE;

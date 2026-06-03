@@ -572,6 +572,10 @@ int xj380_gui_poll_events(xj380_emu_t *emu)
             switch (ev.window.event) {
             case SDL_WINDOWEVENT_CLOSE:
                 gw->open = false;
+                if (gw->fb)   { free(gw->fb);   gw->fb   = NULL; }
+                if (gw->tex)  { SDL_DestroyTexture(gw->tex);  gw->tex  = NULL; }
+                if (gw->rend) { SDL_DestroyRenderer(gw->rend); gw->rend = NULL; }
+                if (gw->win)  { SDL_DestroyWindow(gw->win);   gw->win  = NULL; }
                 return 2;  /* 通知调用者: 窗口被用户关闭 */
             case SDL_WINDOWEVENT_RESIZED:
                 gw->width  = ev.window.data1;
@@ -736,12 +740,16 @@ void xj380_gui_flush_events(xj380_emu_t *emu)
         uc_reg_write(uc, UC_X86_REG_RIP, &cb);
 
         /* 运行直到返回 trampoline */
-        uc_emu_start(uc, cb, EVT_RETURN_TRAMP, 0, 0);
+        uc_err ev_err = uc_emu_start(uc, cb, EVT_RETURN_TRAMP, 0, 0);
 
-        /* 恢复状态 */
+        /* 恢复状态 (即使执行失败也要尽量恢复) */
         uc_reg_write(uc, UC_X86_REG_RIP, &saved_rip);
         uc_reg_write(uc, UC_X86_REG_RSP, &saved_rsp);
         uc_reg_write(uc, UC_X86_REG_EFLAGS, &saved_rflags);
+
+        if (ev_err != UC_ERR_OK) {
+            fprintf(stderr, "[GUI] 事件注入失败: %s\n", uc_strerror(ev_err));
+        }
     }
 }
 
