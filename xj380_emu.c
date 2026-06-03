@@ -167,8 +167,6 @@ static int vfs_import_host(xj380_emu_t *emu, const char *vpath, const char *hpat
         if (!d) { fclose(fp); return -1; }
         (void)fread(d, 1, (size_t)sz, fp);
     }
-    if (!d) { fclose(fp); return -1; }
-    (void)fread(d, 1, (size_t)sz, fp);
     fclose(fp);
     int idx = emu->vfs_count++;
     strncpy(emu->vfs[idx].path, vpath, VFS_PATH_MAX - 1);
@@ -539,9 +537,16 @@ static void xj380_syscall_hook(uc_engine *uc, uint64_t addr, uint32_t size, void
     xj380_emu_t *emu = (xj380_emu_t*)user_data;
     uint64_t xj380_no = r(emu, UC_X86_REG_RAX);
 
-    /* Linux syscall ABI: arg4 在 R10, 我们 handler 期望在 RCX */
+    /* Linux syscall ABI: arg4 在 R10, handler 期望在 RCX */
     uint64_t r10_val = r(emu, UC_X86_REG_R10);
     w(emu, UC_X86_REG_RCX, r10_val);
+
+    /* 7-arg 函数兼容: syscall 路径 arg7 在 R9, 压栈统一两路径 */
+    uint64_t r9_val = r(emu, UC_X86_REG_R9);
+    uint64_t sp = r(emu, UC_X86_REG_RSP);
+    sp -= 8;
+    w(emu, UC_X86_REG_RSP, sp);
+    xj380_mem_write(emu, sp, &r9_val, 8);
 
     /* 特殊 syscall: SYS_BRK (12) */
     if (xj380_no == 12) {
@@ -556,6 +561,11 @@ static void xj380_syscall_hook(uc_engine *uc, uint64_t addr, uint32_t size, void
             w(emu, UC_X86_REG_RAX, UINT64_MAX);
         }
     }
+
+    /* 弹出之前压入的 R9 (7-arg 兼容) */
+    sp = r(emu, UC_X86_REG_RSP);
+    sp += 8;
+    w(emu, UC_X86_REG_RSP, sp);
 
     /* 跳过 syscall 指令 (2 字节), 返回 enter_syscall 的收尾代码 */
     w(emu, UC_X86_REG_RIP, addr + 2);
@@ -597,15 +607,24 @@ static void tramp_hook(uc_engine *uc, uint64_t addr, uint32_t size, void *user_d
     int syscall_no = (int)((addr - XJ380_TRAMP_BASE) / TRAMP_SLOT_SIZE);
     if (syscall_no < 0 || syscall_no >= XAPI_COUNT) return;
 
-    /* 先让 handler 读取调用者设置的 RDI..R9 */
+    /* 7-arg 兼容: 压 R9 入栈, 统一两路径 (此处 [RSP+8] 有 arg7) */
+    uint64_t my_r9 = r(emu, UC_X86_REG_R9);
+    uint64_t my_sp = r(emu, UC_X86_REG_RSP);
+    my_sp -= 8;
+    w(emu, UC_X86_REG_RSP, my_sp);
+    xj380_mem_write(emu, my_sp, &my_r9, 8);
+
     dispatch_xapi(emu, syscall_no);
 
+    /* 弹出 R9, 露出返回地址 */
+    my_sp += 8;
+    w(emu, UC_X86_REG_RSP, my_sp);
+
     /* 模拟 ret: 从栈顶弹返回地址 */
-    uint64_t rsp = r(emu, UC_X86_REG_RSP);
     uint64_t ret_addr = 0;
-    uc_mem_read(uc, rsp, (uint8_t*)&ret_addr, 8);
-    rsp += 8;
-    w(emu, UC_X86_REG_RSP, rsp);
+    uc_mem_read(uc, my_sp, (uint8_t*)&ret_addr, 8);
+    my_sp += 8;
+    w(emu, UC_X86_REG_RSP, my_sp);
     w(emu, UC_X86_REG_RIP, ret_addr);
 }
 
@@ -815,7 +834,13 @@ static void h_EXIT(xj380_emu_t *e) {
 static void h_GETTASKLIST(xj380_emu_t *e) {
     uint64_t ba = r(e, UC_X86_REG_RDI); uint64_t mc = r(e, UC_X86_REG_RSI);
     if (ba && mc > 0) {
-        XapiTaskInfo ti = { .pid = 1, .name = "xj380-app", .state = 0 };
+        XapiTaskInfo ti;
+        memset(&ti, 0, sizeof(ti));
+        ti.pid  = 1;
+        ti.ppid = 0;
+        ti.process_status = 0;  /* running */
+        strncpy(ti.process_name, "xswl-app", XJ380_TASK_NAME_LEN - 1);
+        strncpy(ti.thread_name,  "main",    XJ380_TASK_NAME_LEN - 1);
         xj380_mem_write(e, ba, &ti, sizeof(ti));
     }
     w(e, UC_X86_REG_RAX, 1);
@@ -829,15 +854,26 @@ static void h_GETTIME(xj380_emu_t *e) {
 }
 static void h_GETCURRENTUSER(xj380_emu_t *e) {
     uint64_t a = r(e, UC_X86_REG_RDI);
-    if (a) xj380_mem_write(e, a, &e->current_user, sizeof(UserInfo));
+    if (a) {
+        UserInfo ui;
+        memset(&ui, 0, sizeof(ui));
+        strncpy(ui.name, "Admin", 63);
+        ui.user_type = 2;
+        xj380_mem_write(e, a, &ui, sizeof(ui));
+    }
 }
 static void h_GETTIMEX(xj380_emu_t *e) {
     uint64_t a = r(e, UC_X86_REG_RDI);
     if (a) {
         time_t n = time(NULL); struct tm *tm = localtime(&n);
-        TimeType xt = { .year=(UINT32)(tm->tm_year+1900), .month=(UINT32)(tm->tm_mon+1),
-            .day=(UINT32)tm->tm_mday, .hour=(UINT32)tm->tm_hour,
-            .minute=(UINT32)tm->tm_min, .second=(UINT32)tm->tm_sec };
+        TimeType xt;
+        memset(&xt, 0, sizeof(xt));
+        xt.tm_sec  = tm->tm_sec;
+        xt.tm_min  = tm->tm_min;
+        xt.tm_hour = tm->tm_hour;
+        xt.tm_mday = tm->tm_mday;
+        xt.tm_mon  = tm->tm_mon + 1;
+        xt.tm_year = tm->tm_year + 1900;
         xj380_mem_write(e, a, &xt, sizeof(xt));
     }
 }
@@ -978,10 +1014,10 @@ static void gh_DRAWTEXT(xj380_emu_t *e) {
         (uint32_t)r(e,UC_X86_REG_R8), (uint32_t)r(e,UC_X86_REG_R9));
 }
 static void gh_DRAWTEXTL(xj380_emu_t *e) {
-    /* 7 参数: 前6个在寄存器, width_ptr 在栈上 [RSP+8] (call 压入了返回地址) */
+    /* 7 参数: syscall/tramp 两路径都已压 R9 入栈 → [RSP+0] = 7th arg */
     uint64_t rsp = r(e, UC_X86_REG_RSP);
     uint64_t width_ptr = 0;
-    xj380_mem_read(e, rsp + 8, &width_ptr, 8);
+    xj380_mem_read(e, rsp, &width_ptr, 8);
     xj380_gui_draw_text_l(e, GETH, (uint32_t)r(e,UC_X86_REG_RSI),
         (uint32_t)r(e,UC_X86_REG_RDX), r(e,UC_X86_REG_RCX),
         (uint32_t)r(e,UC_X86_REG_R8), (uint32_t)r(e,UC_X86_REG_R9), width_ptr);
@@ -1161,10 +1197,9 @@ xj380_emu_t* xj380_create(void)
     }
 
     /* Admin 用户 */
-    emu->current_user = (UserInfo){
-        .user_type = 2, .perm_r = true, .perm_w = true,
-        .perm_cs = true, .perm_nv = true,
-    };
+    memset(&emu->current_user, 0, sizeof(emu->current_user));
+    strncpy(emu->current_user.name, "Admin", 63);
+    emu->current_user.user_type = 2;
 
     /* VFS 根 */
     emu->vfs_capacity = 64;

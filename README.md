@@ -1,8 +1,6 @@
-# XSWL 重制版 (笑死我了重制版)
+# 笑死我了重制版
 
-XJ380 操作系统高性能二进制模拟器。基于 Unicorn Engine C API，无 Python 层，全路径 C 级别直通。
-
-> "笑死我了" — XSWL — XJ380 Simulator With Love
+XJ380 操作系统应用程序模拟器。基于 Unicorn Engine C API。
 
 ## 快速开始
 
@@ -147,7 +145,6 @@ xj380_emu/
 
 - **TUI 模式**：全速 Unicorn 执行，无额外开销
 - **GUI 模式**：时间分片，每 50,000 条指令切出处理 SDL2 事件，约 60fps 窗口刷新
-- **无 Python**：所有 syscall 处理在 C 级别完成，消除 Python/C 边界开销
 
 ## License
 

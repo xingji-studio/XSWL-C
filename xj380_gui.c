@@ -430,15 +430,18 @@ void xj380_gui_draw_picture(xj380_emu_t *emu, uint64_t handle,
 void xj380_gui_read_buffer(xj380_emu_t *emu, uint64_t handle,
     uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t buf_ptr)
 {
+    /* RGBA(4字节) → XCOLOR(3字节 RGB  packed, 无Alpha) */
     gui_window_t *gw = find_window(handle);
     if (!gw || !buf_ptr) return;
-
-    /* 逐行复制 RGBA 到模拟器内存 */
     for (uint32_t dy = 0; dy < h && (y + dy) < (uint32_t)gw->height; dy++) {
-        uint64_t row_addr = buf_ptr + (uint64_t)dy * (uint64_t)w * 4;
         for (uint32_t dx = 0; dx < w && (x + dx) < (uint32_t)gw->width; dx++) {
             uint32_t pixel = gw->fb[(y + dy) * (uint32_t)gw->width + (x + dx)];
-            xj380_mem_write(emu, row_addr + (uint64_t)dx * 4, &pixel, 4);
+            uint8_t rgb[3];
+            rgb[0] = (uint8_t)((pixel >> 16) & 0xFF); /* R */
+            rgb[1] = (uint8_t)((pixel >>  8) & 0xFF); /* G */
+            rgb[2] = (uint8_t)( pixel        & 0xFF); /* B */
+            uint64_t addr = buf_ptr + (uint64_t)(dy * w + dx) * 3;
+            xj380_mem_write(emu, addr, rgb, 3);
         }
     }
 }
@@ -446,14 +449,16 @@ void xj380_gui_read_buffer(xj380_emu_t *emu, uint64_t handle,
 void xj380_gui_write_buffer(xj380_emu_t *emu, uint64_t handle,
     uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t buf_ptr)
 {
+    /* XCOLOR(3字节 RGB) → RGBA(4字节, A=255) */
     gui_window_t *gw = find_window(handle);
     if (!gw || !buf_ptr) return;
-
     for (uint32_t dy = 0; dy < h && (y + dy) < (uint32_t)gw->height; dy++) {
         for (uint32_t dx = 0; dx < w && (x + dx) < (uint32_t)gw->width; dx++) {
-            uint32_t pixel = 0;
-            uint64_t addr = buf_ptr + (uint64_t)(dy * w + dx) * 4;
-            xj380_mem_read(emu, addr, &pixel, 4);
+            uint8_t rgb[3] = {0,0,0};
+            uint64_t addr = buf_ptr + (uint64_t)(dy * w + dx) * 3;
+            xj380_mem_read(emu, addr, rgb, 3);
+            uint32_t pixel = 0xFF000000 | ((uint32_t)rgb[0] << 16) |
+                             ((uint32_t)rgb[1] << 8) | (uint32_t)rgb[2];
             gw->fb[(y + dy) * (uint32_t)gw->width + (x + dx)] = pixel;
         }
     }
@@ -839,8 +844,20 @@ void xj380_gui_get_pic_size(xj380_emu_t *emu, uint64_t path_ptr,
 void xj380_gui_read_buffer_a(xj380_emu_t *emu, uint64_t handle,
     uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t buf_ptr)
 {
-    /* RGBA → XCOLORA: 格式相同, 直接复 */
-    xj380_gui_read_buffer(emu, handle, x, y, w, h, buf_ptr);
+    /* RGBA(4字节) → XCOLOR(3字节 RGB, 无Alpha) */
+    gui_window_t *gw = find_window(handle);
+    if (!gw || !buf_ptr) return;
+    for (uint32_t dy = 0; dy < h && (y + dy) < (uint32_t)gw->height; dy++) {
+        for (uint32_t dx = 0; dx < w && (x + dx) < (uint32_t)gw->width; dx++) {
+            uint32_t pixel = gw->fb[(y + dy) * (uint32_t)gw->width + (x + dx)];
+            uint8_t rgb[3];
+            rgb[0] = (uint8_t)((pixel >> 16) & 0xFF); /* R */
+            rgb[1] = (uint8_t)((pixel >>  8) & 0xFF); /* G */
+            rgb[2] = (uint8_t)( pixel        & 0xFF); /* B */
+            uint64_t addr = buf_ptr + (uint64_t)(dy * w + dx) * 3;
+            xj380_mem_write(emu, addr, rgb, 3);
+        }
+    }
 }
 
 void xj380_gui_write_buffer_a(xj380_emu_t *emu, uint64_t handle,

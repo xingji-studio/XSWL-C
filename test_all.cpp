@@ -60,8 +60,7 @@ int main(int argc, char* argv[], char* envp[])
 
     TEST("GetTimeX");
     TimeType tm; xapi_GetTimeX(&tm);
-    if (tm.tm_year >= 2024) { xapi_Printf(" = %d", tm.tm_year); OK(); }
-    else FAIL("年份异常");
+    if (tm.tm_year >= 2024) OK(); else FAIL("年份异常");
 
     /* ============================================================
      * 2. 文本 I/O
@@ -301,9 +300,9 @@ int main(int argc, char* argv[], char* envp[])
     OK();
 
     TEST("ReadBufferA");
-    XCOLORA rca = {0,0,0,0};
-    xapi_ReadBufferA(hWnd, 520, 10, 1, 1, &rca);
-    if (rca.Green == 255) OK(); else FAIL("回读Alpha不匹配");
+    XCOLOR rca2 = {0,0,0};
+    xapi_ReadBufferA(hWnd, 520, 10, 1, 1, &rca2);
+    if (rca2.Green == 255) OK(); else FAIL("回读不匹配");
 
     TEST("RefreshWindow");
     xapi_RefreshWindow(hWnd);

@@ -70,33 +70,32 @@ typedef struct {
     UINT64  filetype;   /* 0=文件, 1=文件夹 */
 } DirNode;
 
-/* 用户信息 (手册 1-4) */
+/* 用户信息 (手册 1-4) — 必须与 xtuiapi.h SDK 定义一致 */
 typedef struct {
-    UINT32  user_type;    /* 0=Root, 1=System, 2=Admin, 3=Visitor, 4=Custom */
-    bool    perm_r;
-    bool    perm_w;
-    bool    perm_cs;
-    bool    perm_nv;
-    bool    perm_sv;
-    bool    perm_sr;
-    bool    perm_sw;
+    char     name[64];
+    UINT32   user_type;    /* 0=Root, 1=System, 2=Admin, 3=Visitor, 4=Custom */
 } UserInfo;
 
-/* 任务信息 (手册 3-4-4) */
+/* 任务信息 (手册 3-4-4) — 必须与 libsys.h SDK 定义一致 */
+#define XJ380_TASK_NAME_LEN 32
 typedef struct {
-    UINT64  pid;
-    WSTR    name;
-    UINT32  state;
+    UINT64 pid, ppid, tid, cpu_id, task_level, thread_count, window_count, memory_bytes;
+    UINT32 process_status, thread_status;
+    char    process_name[XJ380_TASK_NAME_LEN];
+    char    thread_name[XJ380_TASK_NAME_LEN];
 } XapiTaskInfo;
 
-/* 时间类型 (手册 3-5-4) */
+/* 时间类型 (手册 3-5-4) — 必须与 xtuiapi.h SDK 定义一致 */
 typedef struct {
-    UINT32  year;
-    UINT32  month;
-    UINT32  day;
-    UINT32  hour;
-    UINT32  minute;
-    UINT32  second;
+    INT32  tm_sec;
+    INT32  tm_min;
+    INT32  tm_hour;
+    INT32  tm_mday;
+    INT32  tm_mon;
+    INT32  tm_year;
+    INT32  tm_wday;
+    INT32  tm_yday;
+    INT32  tm_isdst;
 } TimeType;
 
 /* 右键菜单项 (手册 4-7-1) */
