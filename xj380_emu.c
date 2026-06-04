@@ -41,9 +41,11 @@
 
 typedef struct {
     char    path[VFS_PATH_MAX];
-    uint8_t *data;
+    uint8_t *data;       /* 宿主内存 (源数据) */
     size_t  size;
     bool    is_dir;
+    uint64_t emu_addr;   /* 模拟器内存缓存 (首次Open时分配) */
+    bool    emu_cached;  /* 是否已缓存到模拟器内存 */
 } vfs_entry_t;
 
 /* ================================================================
@@ -162,19 +164,20 @@ static int vfs_import_host(xj380_emu_t *emu, const char *vpath, const char *hpat
     FILE *fp = fopen(hpath, "rb");
     if (!fp) return -1;
     fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
+    long fsz = ftell(fp);
     fseek(fp, 0, SEEK_SET);
+    size_t sz = (fsz > 0) ? (size_t)fsz : 0;
     uint8_t *d = NULL;
     if (sz > 0) {
-        d = malloc((size_t)sz);
+        d = malloc(sz);
         if (!d) { fclose(fp); return -1; }
-        (void)fread(d, 1, (size_t)sz, fp);
+        (void)fread(d, 1, sz, fp);
     }
     fclose(fp);
     int idx = emu->vfs_count++;
     strncpy(emu->vfs[idx].path, vpath, VFS_PATH_MAX - 1);
     emu->vfs[idx].data   = d;
-    emu->vfs[idx].size   = (size_t)sz;
+    emu->vfs[idx].size   = sz;
     emu->vfs[idx].is_dir = false;
     return idx;
 }
@@ -782,17 +785,28 @@ static void h_OPENFILE(xj380_emu_t *e) {
         const char *hp = (*p == '/') ? p + 1 : p;
         idx = vfs_import_host(e, p, hp);
         if (idx < 0) {
-            /* 文件不存在且导入失败 → 返回 NULL, 不创建空文件 */
-            w(e, UC_X86_REG_RAX, 0);
-            return;
+            /* /system/ 路径是系统文件: 创建空占位防止程序死循环 */
+            if (strncmp(p, "/system/", 8) == 0) {
+                idx = vfs_create(e, p, false);
+                if (idx < 0) { w(e, UC_X86_REG_RAX, 0); return; }
+            } else {
+                w(e, UC_X86_REG_RAX, 0);
+                return;
+            }
         }
     }
     vfs_entry_t *ent = &e->vfs[idx];
     uint64_t xf = emu_brk(e, 16);
     uint64_t len = ent->size, buf = 0;
     if (ent->size > 0 && ent->data) {
-        buf = emu_brk(e, ent->size);
-        xj380_mem_write(e, buf, ent->data, ent->size);
+        if (!ent->emu_cached) {
+            buf = emu_brk(e, ent->size);
+            xj380_mem_write(e, buf, ent->data, ent->size);
+            ent->emu_addr   = buf;
+            ent->emu_cached = true;
+        } else {
+            buf = ent->emu_addr;
+        }
     }
     xj380_mem_write(e, xf,     &len, 8);
     xj380_mem_write(e, xf + 8, &buf, 8);
@@ -843,7 +857,13 @@ static void h_DELETEFILE(xj380_emu_t *e) {
     uint64_t a = r(e, UC_X86_REG_RDI); char p[512];
     xj380_mem_read_str(e, a, p, sizeof(p));
     int idx = vfs_find(e, p);
-    if (idx >= 0) { free(e->vfs[idx].data); e->vfs[idx].data = NULL; e->vfs[idx].size = 0; }
+    if (idx >= 0) {
+        free(e->vfs[idx].data);
+        e->vfs[idx].data = NULL;
+        e->vfs[idx].size = 0;
+        e->vfs[idx].emu_cached = false;
+        e->vfs[idx].emu_addr   = 0;
+    }
 }
 static void h_RENAMEFILE(xj380_emu_t *e) {
     uint64_t oa = r(e, UC_X86_REG_RDI), na = r(e, UC_X86_REG_RSI);
@@ -855,6 +875,7 @@ static void h_RENAMEFILE(xj380_emu_t *e) {
 static void h_READFILE(xj380_emu_t *e) {
     uint64_t pa = r(e, UC_X86_REG_RDI), ba = r(e, UC_X86_REG_RSI);
     uint64_t sz = r(e, UC_X86_REG_RDX),  off = r(e, UC_X86_REG_RCX);
+    if (!ba || !sz) return;
     char p[512]; xj380_mem_read_str(e, pa, p, sizeof(p));
     int idx = vfs_find(e, p);
     if (idx >= 0 && e->vfs[idx].data && off < e->vfs[idx].size) {
@@ -865,14 +886,21 @@ static void h_READFILE(xj380_emu_t *e) {
 static void h_WRITEFILE(xj380_emu_t *e) {
     uint64_t pa = r(e, UC_X86_REG_RDI), ba = r(e, UC_X86_REG_RSI);
     uint64_t sz = r(e, UC_X86_REG_RDX),  off = r(e, UC_X86_REG_RCX);
+    if (!ba || !sz) return;
     char p[512]; xj380_mem_read_str(e, pa, p, sizeof(p));
     int idx = vfs_find(e, p);
     if (idx < 0) idx = vfs_create(e, p, false);
     if (idx >= 0) {
         vfs_entry_t *et = &e->vfs[idx];
         size_t ns = (size_t)(off + sz);
-        if (ns > et->size) { et->data = realloc(et->data, ns); et->size = ns; }
+        if (ns > et->size) {
+            uint8_t *nd = realloc(et->data, ns);
+            if (!nd) return;
+            et->data = nd;
+            et->size = ns;
+        }
         xj380_mem_read(e, ba, et->data + off, (size_t)sz);
+        et->emu_cached = false;  /* 内容变了, 缓存失效 */
     }
 }
 static void h_RMDIR(xj380_emu_t *e) { h_DELETEFILE(e); }
@@ -1032,12 +1060,10 @@ static void h_SYSBRK(xj380_emu_t *e) {
         return;
     }
     if (new_brk > e->brk_addr) {
-        /* 扩展堆: 映射新页 (堆已预映射, 失败也无害) */
         uint64_t need = (new_brk - e->brk_addr + 0xFFFULL) & ~0xFFFULL;
         (void)uc_mem_map(e->uc, e->brk_addr, need, UC_PROT_READ | UC_PROT_WRITE);
         e->brk_addr = new_brk;
-    } else if (new_brk < e->brk_addr) {
-        /* 收缩堆: 允许但不实际释放 */
+    } else if (new_brk < e->brk_addr && new_brk >= XJ380_HEAP_BASE) {
         e->brk_addr = new_brk;
     }
     w(e, UC_X86_REG_RAX, e->brk_addr);
@@ -1330,12 +1356,16 @@ xj380_emu_t* xj380_create(void)
     strncpy(emu->current_user.name, "Admin", 63);
     emu->current_user.user_type = 2;
 
-    /* VFS 根 */
+    /* VFS 根 + 系统目录 (防止程序找不到系统文件死循环) */
     emu->vfs_capacity = 64;
     emu->vfs = calloc((size_t)emu->vfs_capacity, sizeof(vfs_entry_t));
-    emu->vfs_count = 1;
+    emu->vfs_count = 3;
     strcpy(emu->vfs[0].path, "/");
     emu->vfs[0].is_dir = true;
+    strcpy(emu->vfs[1].path, "/system");
+    emu->vfs[1].is_dir = true;
+    strcpy(emu->vfs[2].path, "/system/font");
+    emu->vfs[2].is_dir = true;
 
     /* trampoline 范围 hook: 截获所有 xapi 调用 */
     uc_hook h_tramp;
