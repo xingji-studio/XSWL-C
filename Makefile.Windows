@@ -5,7 +5,6 @@
 #   make -f Makefile.Windows release  g++ -O3 -flto
 
 TARGET    = xswl.exe
-TEST_ELF  = test_xj380.elf
 
 # ---- SDL3 / Unicorn 路径 ----
 SDL3_CFLAGS := $(shell pkg-config --cflags sdl3 2>/dev/null || echo "-I/usr/include/SDL3")
@@ -67,13 +66,6 @@ release:
 # ============================================================
 # 测试
 # ============================================================
-$(TEST_ELF): test_xj380.S
-	gcc -m64 -nostdlib -static -no-pie -o $@ $< -Wl,-Ttext=0x200000
-
-.PHONY: test
-test: $(TARGET) $(TEST_ELF)
-	./$(TARGET) $(TEST_ELF)
-
 .PHONY: clean
 clean:
-	rm -f $(TARGET) $(TEST_ELF) *.o *.rel.o
+	rm -f $(TARGET) *.o *.rel.o

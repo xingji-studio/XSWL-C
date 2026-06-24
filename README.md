@@ -1,12 +1,9 @@
 # XSWL-C
 
-XSWL-C is a C implementation of an XJ380 application emulator. It loads XJ380
-ELF/EPF programs, runs x86_64 code through Unicorn Engine, and implements a
-practical subset of the XAPI TUI and GUI calls on Linux with SDL3.
+XSWL-C 是一个用 C 写的 XJ380 应用程序模拟器。它通过 Unicorn Engine 执行
+XJ380 ELF/EPF 程序，并在 Linux 上用 SDL3 实现常用的 XAPI TUI 和 GUI 调用。
 
-Chinese documentation: [README.zh-CN.md](README.zh-CN.md)
-
-## Requirements
+## 依赖
 
 Ubuntu/Debian:
 
@@ -14,30 +11,28 @@ Ubuntu/Debian:
 sudo apt install -y cmake ninja-build pkg-config libunicorn-dev libsdl3-dev
 ```
 
-Main dependencies:
-
-| Library | Use |
+| 库 | 用途 |
 |---|---|
-| Unicorn Engine | x86_64 CPU emulation |
-| SDL3 | GUI windows, events, and BMP/PNG image loading |
-| nanosvg | SVG rasterization, vendored |
+| Unicorn Engine | x86_64 CPU 模拟 |
+| SDL3 | 窗口、事件和 BMP/PNG 图片加载 |
+| nanosvg | SVG 渲染，已放在仓库内 |
 
-## Build
+## 编译
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-Useful build options:
+常用选项：
 
-| Option | Default | Description |
+| 选项 | 默认 | 说明 |
 |---|---:|---|
-| `XSWL_ENABLE_DEV_SANITIZERS` | `OFF` | Enable ASan/UBSan in Debug builds |
-| `XSWL_ENABLE_TRACE` | `OFF` | Enable instruction/syscall trace logging |
-| `XSWL_ENABLE_NATIVE_RELEASE` | `OFF` | Add `-march=native` to Release builds |
+| `XSWL_ENABLE_DEV_SANITIZERS` | `OFF` | Debug 构建启用 ASan/UBSan |
+| `XSWL_ENABLE_TRACE` | `OFF` | 启用指令/syscall 跟踪日志 |
+| `XSWL_ENABLE_NATIVE_RELEASE` | `OFF` | Release 构建添加 `-march=native` |
 
-Development build:
+调试构建：
 
 ```bash
 cmake -S . -B build-dev -G Ninja -DCMAKE_BUILD_TYPE=Debug \
@@ -45,53 +40,48 @@ cmake -S . -B build-dev -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build-dev
 ```
 
-## Run
+## 运行
 
 ```bash
-./build/xswl <XJ380 ELF/EPF file>
+./build/xswl <XJ380 ELF/EPF 文件>
 ```
 
-`nodebug` or `--nodebug` can be passed before the program path to reduce log
-output:
+如果不想输出调试日志，可以在程序路径前加 `nodebug` 或 `--nodebug`：
 
 ```bash
 ./build/xswl nodebug ./app.elf
 ```
 
-## Tests
+## 测试
 
 ```bash
 cmake --build build --target xswl_run_gui_events
 ```
 
-The GUI event test uses SDL's dummy video driver and is suitable for CI or
-headless shells.
+GUI 事件测试使用 SDL dummy video driver，可以在没有显示器的环境里跑。
 
-## Supported XAPI Areas
+## 目前覆盖的 XAPI
 
-Current coverage includes:
-
-| Area | Examples |
+| 范围 | 示例 |
 |---|---|
 | TUI | `Output`, `Input`, `Getch`, `Printf`, `OutputSerial` |
-| Files | `OpenFile`, `ReadFile`, `WriteFile`, `CreateFile`, `DeleteFile` |
-| Processes | `Fork`, `Execve`, `Exit`, `GetTaskList`, `KillProcess` |
-| System | `GetSystemVersion`, `GetTime`, `GetCurrentUser`, `Sleep` |
-| Memory | `AllocateMemory`, `FreeMemory`, `MapMemory` |
-| GUI windows | `CreateWindow`, `SetWindowTitle`, `SetMsgPrcor` |
-| Drawing | `DrawPoint`, `DrawLine`, `DrawRect`, `DrawText`, `DrawSvg` |
-| Images | `DrawBMP`, `DrawPNG`, `DrawPicture`, `GetPicSize` |
+| 文件 | `OpenFile`, `ReadFile`, `WriteFile`, `CreateFile`, `DeleteFile` |
+| 进程 | `Fork`, `Execve`, `Exit`, `GetTaskList`, `KillProcess` |
+| 系统 | `GetSystemVersion`, `GetTime`, `GetCurrentUser`, `Sleep` |
+| 内存 | `AllocateMemory`, `FreeMemory`, `MapMemory` |
+| GUI 窗口 | `CreateWindow`, `SetWindowTitle`, `SetMsgPrcor` |
+| 绘图 | `DrawPoint`, `DrawLine`, `DrawRect`, `DrawText`, `DrawSvg` |
+| 图片 | `DrawBMP`, `DrawPNG`, `DrawPicture`, `GetPicSize` |
 | Framebuffer | `ReadBuffer`, `WriteBuffer`, `WriteBufferA`, `RefreshWindow` |
 
-## Notes
+## 说明
 
-XSWL-C supports two execution styles used by current XJ380 binaries:
+XSWL-C 支持两种当前 XJ380 程序会用到的执行方式：
 
-- syscall scanning for normal XJ380 ELF/EPF programs;
-- a trampoline page for small assembly tests that call XAPI directly.
+- 扫描普通 XJ380 ELF/EPF 程序里的 syscall 指令并挂钩；
+- 为小型汇编测试提供 trampoline 页，直接调用 XAPI。
 
-The emulator keeps its own in-memory VFS for guest files and can import host
-files on demand when a guest opens a path.
+模拟器有自己的内存 VFS。程序打开文件时，也可以按路径从宿主系统导入文件。
 
 ## License
 
