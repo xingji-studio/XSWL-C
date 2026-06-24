@@ -1,7 +1,7 @@
 /*
  * main.c — XJ380 模拟器 CLI 入口
  *
- * 用法: ./xj380_emu <ELF文件>
+ * Usage: ./xswl <ELF file>
  */
 
 #include "xj380_emu.h"
@@ -24,20 +24,20 @@ int main(int argc, char **argv)
     }
 
     if (!elf_path) {
-        fprintf(stderr, "用法: %s [nodebug|--nodebug] <XJ380 ELF 文件>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [nodebug|--nodebug] <XJ380 ELF File>\n", argv[0]);
         return 1;
     }
 
     xj380_emu_t *emu = xj380_create();
     if (!emu) {
-        fprintf(stderr, "创建模拟器失败\n");
+        fprintf(stderr, "failed to create emulator\n");
         return 1;
     }
 
     xj380_set_debug(emu, debug_enabled);
 
     if (xj380_load_elf(emu, elf_path) != 0) {
-        fprintf(stderr, "加载失败: %s\n", xj380_strerror(emu));
+        fprintf(stderr, "load failed: %s\n", xj380_strerror(emu));
         xj380_destroy(emu);
         return 1;
     }
@@ -45,7 +45,7 @@ int main(int argc, char **argv)
     char *guest_argv[] = {(char *)elf_path, NULL};
     int ret = xj380_run(emu, 1, guest_argv);
     if (ret != 0) {
-        fprintf(stderr, "运行错误: %s\n", xj380_strerror(emu));
+        fprintf(stderr, "runtime error: %s\n", xj380_strerror(emu));
     }
 
     xj380_destroy(emu);

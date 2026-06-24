@@ -77,11 +77,15 @@ msg_proc:
     je   .roller
     ret
 .char:
+    test rsi, rsi
+    jne  .done
     cmp  rdx, 0x41
     jne  .done
     or   qword ptr [rip + seen_mask], SEEN_CHAR
     ret
 .spchar:
+    test rsi, rsi
+    jne  .done
     cmp  rdx, 128
     jne  .done
     or   qword ptr [rip + seen_mask], SEEN_SPCHAR

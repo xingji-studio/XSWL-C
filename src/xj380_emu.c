@@ -1,13 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
 
-/*
- * xj380_emu.c — XSWL 重制版 (笑死我了重制版) 核心
- *
- * XJ380 二进制模拟器: Unicorn C API + ELF 加载 + syscall 分发 + VFS。
- * 无 Python 层, 全路径 C 级别直通。
- */
-
 #include "xj380_emu.h"
 
 #ifdef XJ380_GUI
@@ -383,6 +376,49 @@ static int vfs_find(xj380_emu_t *emu, const char *path) {
     return -1;
 }
 
+static int vfs_remove(xj380_emu_t *emu, const char *path)
+{
+    int idx = vfs_find(emu, path);
+    if (idx < 0)
+    {
+        return -1;
+    }
+
+    free(emu->vfs[idx].data);
+    if (idx + 1 < emu->vfs_count)
+    {
+        memmove(&emu->vfs[idx], &emu->vfs[idx + 1],
+            (size_t)(emu->vfs_count - idx - 1) * sizeof(emu->vfs[0]));
+    }
+    emu->vfs_count--;
+    return 0;
+}
+
+int xj380_vfs_read_file(xj380_emu_t *emu, const char *path, const uint8_t **data, size_t *size)
+{
+    int idx = -1;
+
+    if (!emu || !path || !data || !size)
+    {
+        return -1;
+    }
+
+    idx = vfs_find(emu, path);
+    if (idx < 0 && path[0] == '/')
+    {
+        idx = vfs_find(emu, path + 1);
+    }
+
+    if (idx < 0 || emu->vfs[idx].is_dir || !emu->vfs[idx].data)
+    {
+        return -1;
+    }
+
+    *data = emu->vfs[idx].data;
+    *size = emu->vfs[idx].size;
+    return 0;
+}
+
 static int vfs_ensure(xj380_emu_t *emu) {
     if (emu->vfs_count >= emu->vfs_capacity) {
         size_t new_cap = (size_t)emu->vfs_capacity * 2;
@@ -503,26 +539,26 @@ typedef struct { uint32_t p_type, p_flags; uint64_t p_offset, p_vaddr, p_paddr,
 int xj380_load_elf(xj380_emu_t *emu, const char *path)
 {
     FILE *fp = fopen(path, "rb");
-    if (!fp) { snprintf(emu->error, sizeof(emu->error), "打开失败: %s", path); return -1; }
+    if (!fp) { snprintf(emu->error, sizeof(emu->error), "open failed: %s", path); return -1; }
 
     Elf64_Ehdr eh;
     if (fread(&eh, sizeof(eh), 1, fp) != 1) {
-        snprintf(emu->error, sizeof(emu->error), "读 ELF 头失败"); fclose(fp); return -1;
+        snprintf(emu->error, sizeof(emu->error), "failed to read ELF header"); fclose(fp); return -1;
     }
 
     if (memcmp(eh.e_ident, "\x7F" "ELF", 4) || eh.e_ident[4] != 2) {
-        snprintf(emu->error, sizeof(emu->error), "非 64 位 ELF"); fclose(fp); return -1;
+        snprintf(emu->error, sizeof(emu->error), "not a 64-bit ELF"); fclose(fp); return -1;
     }
     if (eh.e_machine != 0x3E) {
-        snprintf(emu->error, sizeof(emu->error), "非 x86_64"); fclose(fp); return -1;
+        snprintf(emu->error, sizeof(emu->error), "not x86_64"); fclose(fp); return -1;
     }
     if (eh.e_phentsize != sizeof(Elf64_Phdr) || eh.e_phnum == 0 || eh.e_phnum > MAX_ELF_PHDRS) {
-        snprintf(emu->error, sizeof(emu->error), "ELF 程序头数量或大小无效: %u", eh.e_phnum);
+        snprintf(emu->error, sizeof(emu->error), "invalid ELF program header count or size: %u", eh.e_phnum);
         fclose(fp);
         return -1;
     }
     if (eh.e_phoff > (uint64_t)LONG_MAX) {
-        snprintf(emu->error, sizeof(emu->error), "ELF 程序头偏移过大");
+        snprintf(emu->error, sizeof(emu->error), "ELF program header offset is too large");
         fclose(fp);
         return -1;
     }
@@ -558,20 +594,20 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
     /* 先读取所有程序头（不要在处理段数据时 fseek 破坏文件指针） */
     Elf64_Phdr *phdrs = calloc((size_t)eh.e_phnum, sizeof(Elf64_Phdr));
     if (!phdrs) {
-        snprintf(emu->error, sizeof(emu->error), "程序头分配失败");
+        snprintf(emu->error, sizeof(emu->error), "failed to allocate program headers");
         fclose(fp);
         return -1;
     }
     if (fseek(fp, (long)eh.e_phoff, SEEK_SET) != 0) {
         free(phdrs);
-        snprintf(emu->error, sizeof(emu->error), "定位程序头失败");
+        snprintf(emu->error, sizeof(emu->error), "failed to seek program headers");
         fclose(fp);
         return -1;
     }
     for (int i = 0; i < eh.e_phnum; i++) {
         if (fread(&phdrs[i], sizeof(Elf64_Phdr), 1, fp) != 1) {
             free(phdrs);
-            snprintf(emu->error, sizeof(emu->error), "读取程序头 %d 失败", i);
+            snprintf(emu->error, sizeof(emu->error), "failed to read program header %d", i);
             fclose(fp);
             return -1;
         }
@@ -589,7 +625,7 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
             if (ph.p_filesz > ph.p_memsz || ph.p_memsz > MAX_ELF_LOAD_SIZE
                 || ph.p_vaddr > UINT64_MAX - ph.p_memsz - 0xFFFULL) {
                 free(phdrs);
-                snprintf(emu->error, sizeof(emu->error), "ELF LOAD 段尺寸无效");
+                snprintf(emu->error, sizeof(emu->error), "invalid ELF LOAD segment size");
                 fclose(fp);
                 return -1;
             }
@@ -613,7 +649,7 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
             if (!merged) {
                 if (sn >= MAX_ELF_SEGMENTS) {
                     free(phdrs);
-                    snprintf(emu->error, sizeof(emu->error), "ELF LOAD 段过多");
+                    snprintf(emu->error, sizeof(emu->error), "too many ELF LOAD segments");
                     fclose(fp);
                     return -1;
                 }
@@ -642,7 +678,7 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
             || ph.p_vaddr > UINT64_MAX - ph.p_memsz
             || ph.p_offset > (uint64_t)LONG_MAX) {
             free(phdrs);
-            snprintf(emu->error, sizeof(emu->error), "ELF LOAD 段数据无效");
+            snprintf(emu->error, sizeof(emu->error), "invalid ELF LOAD segment data");
             fclose(fp);
             return -1;
         }
@@ -651,7 +687,7 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
             uint8_t *buf = malloc((size_t)ph.p_filesz);
             if (!buf) {
                 free(phdrs);
-                snprintf(emu->error, sizeof(emu->error), "ELF 段分配失败");
+                snprintf(emu->error, sizeof(emu->error), "failed to allocate ELF segment buffer");
                 fclose(fp);
                 return -1;
             }
@@ -660,7 +696,7 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
                 || xj380_mem_write(emu, ph.p_vaddr, buf, (size_t)ph.p_filesz) != 0) {
                 free(buf);
                 free(phdrs);
-                snprintf(emu->error, sizeof(emu->error), "读取 ELF 段失败");
+                snprintf(emu->error, sizeof(emu->error), "failed to read ELF segment");
                 fclose(fp);
                 return -1;
             }
@@ -672,7 +708,7 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
             if (!z || xj380_mem_write(emu, ph.p_vaddr + ph.p_filesz, z, (size_t)zero_size) != 0) {
                 free(z);
                 free(phdrs);
-                snprintf(emu->error, sizeof(emu->error), "清零 ELF BSS 失败");
+                snprintf(emu->error, sizeof(emu->error), "failed to zero ELF BSS");
                 fclose(fp);
                 return -1;
             }
@@ -703,8 +739,8 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
 
         uint64_t scan_size = ph.p_memsz;
         if (scan_size > 0x800000) {  /* 8MB 上限, 足够覆盖大型二进制 */
-            xj380_log(emu, "[ELF] 警告: 段 0x%llx 超过扫描上限 (%llu > 8MB), "
-                    "部分 syscall 可能未被拦截\n",
+            xj380_log(emu, "[ELF] warning: segment 0x%llx exceeds scan limit (%llu > 8MB); "
+                    "some syscalls may not be hooked\n",
                     (unsigned long long)ph.p_vaddr,
                     (unsigned long long)scan_size);
             scan_size = 0x800000;
@@ -727,7 +763,7 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
                                   (void*)xj380_syscall_hook, emu,
                                   saddr, saddr + 1);
                 _Pragma("GCC diagnostic pop")
-                xj380_log(emu, "[ELF] 发现 syscall @ 0x%llx, 已注册 hook\n",
+                xj380_log(emu, "[ELF] found syscall @ 0x%llx; hook registered\n",
                        (unsigned long long)saddr);
             }
         }
@@ -863,7 +899,7 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
                         if (existing == 0) {
                             uint32_t addr32 = (uint32_t)main_addr;
                             xj380_mem_write(emu, patch_off + 3, &addr32, 4);
-                            xj380_log(emu, "[ELF] 已修补 main 地址: 0x%x\n", addr32);
+                            xj380_log(emu, "[ELF] patched main address: 0x%x\n", addr32);
                         }
                     }
                 }
@@ -873,7 +909,7 @@ int xj380_load_elf(xj380_emu_t *emu, const char *path)
         }
     }
 
-    xj380_log(emu, "[xj380] ELF 加载完成, 入口=0x%llx\n", (unsigned long long)emu->entry_point);
+    xj380_log(emu, "[xj380] ELF loaded, entry=0x%llx\n", (unsigned long long)emu->entry_point);
     return 0;
 }
 
@@ -1030,6 +1066,8 @@ static void xj380_syscall_hook(uc_engine *uc, uint64_t addr, uint32_t size, void
     emu->arg7_value = r(emu, UC_X86_REG_R9);
     emu->arg7_valid = true;
 
+    bool dispatch_gui_event = false;
+
     /* 特殊 syscall: SYS_BRK (12) */
     if (xj380_no == 12) {
         h_SYSBRK(emu);
@@ -1047,8 +1085,10 @@ static void xj380_syscall_hook(uc_engine *uc, uint64_t addr, uint32_t size, void
         int internal_no = map_xj380_to_internal(xj380_no);
         if (internal_no >= 0 && internal_no < XAPI_COUNT && handlers[internal_no]) {
             handlers[internal_no](emu);
+            dispatch_gui_event = (internal_no == XAPI_FLUSHTIME
+                               || internal_no == XAPI_SLEEP);
         } else {
-            fprintf(stderr, "[xj380] 未知 XJ380 syscall: 0x%llx (%llu)\n",
+            fprintf(stderr, "[xj380] unknown XJ380 syscall: 0x%llx (%llu)\n",
                     (unsigned long long)xj380_no, (unsigned long long)xj380_no);
             w(emu, UC_X86_REG_RAX, UINT64_MAX);
         }
@@ -1065,7 +1105,9 @@ static void xj380_syscall_hook(uc_engine *uc, uint64_t addr, uint32_t size, void
     /* 跳过 syscall 指令 (2 字节), 返回 enter_syscall 的收尾代码。 */
     w(emu, UC_X86_REG_RIP, addr + 2);
 #ifdef XJ380_GUI
-    (void)xj380_gui_dispatch_queued_event(emu, addr + 2);
+    if (dispatch_gui_event) {
+        (void)xj380_gui_dispatch_queued_event(emu, addr + 2);
+    }
 #endif
 }
 
@@ -1124,7 +1166,9 @@ static void tramp_hook(uc_engine *uc, uint64_t addr, uint32_t size, void *user_d
     w(emu, UC_X86_REG_RSP, my_sp);
     w(emu, UC_X86_REG_RIP, ret_addr);
 #ifdef XJ380_GUI
-    (void)xj380_gui_dispatch_queued_event(emu, ret_addr);
+    if (syscall_no == XAPI_FLUSHTIME || syscall_no == XAPI_SLEEP) {
+        (void)xj380_gui_dispatch_queued_event(emu, ret_addr);
+    }
 #endif
 }
 
@@ -1300,13 +1344,13 @@ static void h_OPENFILE(xj380_emu_t *e)
                 }
                 else
                 {
-                    fprintf(stderr, "[xj380] OpenFile 失败: '%s' 不存在\n", p);
+                    fprintf(stderr, "[xj380] OpenFile failed: '%s' does not exist\n", p);
                     return;
                 }
             }
             else
             {
-                fprintf(stderr, "[xj380] OpenFile 失败: '%s' 不存在\n", p);
+                fprintf(stderr, "[xj380] OpenFile failed: '%s' does not exist\n", p);
                 return;
             }
         }
@@ -1401,14 +1445,7 @@ static void h_CREATEFILE(xj380_emu_t *e) {
 static void h_DELETEFILE(xj380_emu_t *e) {
     uint64_t a = r(e, UC_X86_REG_RDI); char p[512];
     xj380_mem_read_str(e, a, p, sizeof(p));
-    int idx = vfs_find(e, p);
-    if (idx >= 0) {
-        free(e->vfs[idx].data);
-        e->vfs[idx].data = NULL;
-        e->vfs[idx].size = 0;
-        e->vfs[idx].emu_cached = false;
-        e->vfs[idx].emu_addr   = 0;
-    }
+    w(e, UC_X86_REG_RAX, vfs_remove(e, p) == 0 ? 0 : UINT64_MAX);
 }
 static void h_RENAMEFILE(xj380_emu_t *e) {
     uint64_t oa = r(e, UC_X86_REG_RDI), na = r(e, UC_X86_REG_RSI);
@@ -1506,8 +1543,8 @@ static void h_TORGBA(xj380_emu_t *e) {
     w(e, UC_X86_REG_RAX, rgba);
 }
 static void h_FORK(xj380_emu_t *e) {
-    /* 不支持 fork */
-    w(e, UC_X86_REG_RAX, UINT64_MAX);
+    /* 单进程模拟器无法复制进程映像；父进程返回稳定的伪子进程 PID。 */
+    w(e, UC_X86_REG_RAX, 2);
 }
 static void h_EXECVE(xj380_emu_t *e) {
     /* 不支持 execve */
@@ -1574,7 +1611,7 @@ static void h_GETCPUMODEL(xj380_emu_t *e) {
 static void h_GETMEMORYSIZE(xj380_emu_t *e) { w(e, UC_X86_REG_RAX, 4096); }
 static void h_BROKEN(xj380_emu_t *e) {
     uint64_t a = r(e, UC_X86_REG_RDI); char b[4096];
-    fprintf(stderr, "\n[崩溃] %s\n", xj380_mem_read_str(e, a, b, sizeof(b)) == 0 ? b : "(无信息)");
+    fprintf(stderr, "\n[crash] %s\n", xj380_mem_read_str(e, a, b, sizeof(b)) == 0 ? b : "(no message)");
     e->running = false;
     (void)uc_emu_stop(e->uc);
 }
@@ -1623,13 +1660,14 @@ static void h_SLEEP(xj380_emu_t *e) {
 static void h_RUN(xj380_emu_t *e) {
     uint64_t a = r(e, UC_X86_REG_RDI); char p[512];
     xj380_mem_read_str(e, a, p, sizeof(p));
-    xj380_log(e, "[xj380] Run: %s (不支持)\n", p);
+    xj380_log(e, "[xj380] Run: %s (unsupported)\n", p);
 }
 static void h_RUNARGS(xj380_emu_t *e) {
     /* xapi_RunArgs(WSTR path, WSTR argv[]) — 同 h_RUN, 忽略参数 */
     uint64_t a = r(e, UC_X86_REG_RDI); char p[512];
     xj380_mem_read_str(e, a, p, sizeof(p));
-    xj380_log(e, "[xj380] RunArgs: %s (不支持)\n", p);
+    xj380_log(e, "[xj380] RunArgs: %s (unsupported)\n", p);
+    w(e, UC_X86_REG_RAX, UINT64_MAX);
 }
 static void h_SETMSGPRCOR(xj380_emu_t *e) {
     uint64_t handle = r(e, UC_X86_REG_RDI);
@@ -1781,7 +1819,7 @@ static void h_OPEN(xj380_emu_t *e) {
             ? vfs_import_host(e, p, hp)
             : -1;
         if (idx < 0) {
-            fprintf(stderr, "[xj380] Open 失败: '%s' 不存在\n", p);
+            fprintf(stderr, "[xj380] Open failed: '%s' does not exist\n", p);
             w(e, UC_X86_REG_RAX, UINT64_MAX);
             return;
         }
@@ -2055,7 +2093,7 @@ static const xapi_fn handlers[XAPI_COUNT] = {
 static int dispatch_xapi(xj380_emu_t *emu, int no)
 {
     if (no < 0 || no >= XAPI_COUNT || !handlers[no]) {
-        fprintf(stderr, "[xj380] 未实现: syscall #%d\n", no);
+        fprintf(stderr, "[xj380] unimplemented syscall #%d\n", no);
         return -1;
     }
     handlers[no](emu);
@@ -2182,7 +2220,7 @@ int xj380_run(xj380_emu_t *emu, int host_argc, char **host_argv)
     w(emu, UC_X86_REG_EFLAGS, 0x202);
     emu->running = true;
 
-    xj380_log(emu, "[xj380] ▶ 开始执行 @ 0x%llx\n", (unsigned long long)emu->entry_point);
+    xj380_log(emu, "[xj380] starting execution @ 0x%llx\n", (unsigned long long)emu->entry_point);
 
 #ifdef XJ380_GUI
     /* GUI 模式: 时间分片执行，每 50000 条指令切出来处理事件 */
@@ -2193,7 +2231,6 @@ int xj380_run(xj380_emu_t *emu, int host_argc, char **host_argv)
         if (err == UC_ERR_OK) {
             int ev = xj380_gui_poll_events(emu);
             if (ev == 2) { emu->running = false; break; }
-            xj380_gui_flush_events(emu);
             xj380_gui_render_all(emu);
         } else {
             snprintf(emu->error, sizeof(emu->error), "uc_emu_start: %s", uc_strerror(err));

@@ -141,6 +141,8 @@ struct uc_struct* xj380_get_uc(xj380_emu_t *emu);
 int  xj380_mem_read(xj380_emu_t *emu, uint64_t addr, void *dst, size_t len);
 int  xj380_mem_write(xj380_emu_t *emu, uint64_t addr, const void *src, size_t len);
 int  xj380_mem_read_str(xj380_emu_t *emu, uint64_t addr, char *buf, size_t max);
+int  xj380_vfs_read_file(xj380_emu_t *emu, const char *path,
+                         const uint8_t **data, size_t *size);
 
 /* ================================================================
  * 内部 — xapi 系统调用号

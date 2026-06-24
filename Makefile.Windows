@@ -1,4 +1,4 @@
-# XSWL 重制版 (笑死我了重制版) — Windows Cygwin Makefile
+# XSWL-C — Windows Cygwin Makefile
 #
 #   make -f Makefile.Windows          TUI only
 #   make -f Makefile.Windows gui      TUI + SDL2 GUI
@@ -14,8 +14,8 @@ SDL2_LIBS   := $(shell pkg-config --libs   sdl2 SDL2_image 2>/dev/null || echo "
 UNI_CFLAGS  := $(shell pkg-config --cflags unicorn 2>/dev/null || echo "")
 UNI_LIBS    := $(shell pkg-config --libs   unicorn 2>/dev/null || echo "-lunicorn")
 
-INC_TUI   = $(UNI_CFLAGS)
-INC_GUI   = $(UNI_CFLAGS) $(SDL2_CFLAGS)
+INC_TUI   = -Isrc $(UNI_CFLAGS)
+INC_GUI   = -Isrc $(UNI_CFLAGS) $(SDL2_CFLAGS)
 LIBS_TUI  = $(UNI_LIBS) -lm
 LIBS_GUI  = $(UNI_LIBS) $(SDL2_LIBS) -lm
 
@@ -34,9 +34,9 @@ WARN      = -std=c11 -Wall -Wextra \
 all: CFLAGS = $(WARN) -O2 -DNDEBUG
 all: $(TARGET)
 
-$(TARGET): main.c xj380_emu.c xj380_emu.h
-	$(CC) $(CFLAGS) $(INC_TUI) -c main.c -o main.o
-	$(CC) $(CFLAGS) $(INC_TUI) -c xj380_emu.c -o xj380_emu.o
+$(TARGET): src/main.c src/xj380_emu.c src/xj380_emu.h
+	$(CC) $(CFLAGS) $(INC_TUI) -c src/main.c -o main.o
+	$(CC) $(CFLAGS) $(INC_TUI) -c src/xj380_emu.c -o xj380_emu.o
 	$(CC) $(CFLAGS) -o $@ main.o xj380_emu.o $(LIBS_TUI)
 
 # ============================================================
@@ -45,9 +45,9 @@ $(TARGET): main.c xj380_emu.c xj380_emu.h
 .PHONY: gui
 gui: CFLAGS = $(WARN) -O2 -DNDEBUG -DXJ380_GUI
 gui:
-	$(CC) $(CFLAGS) $(INC_GUI) -c main.c -o main.o
-	$(CC) $(CFLAGS) $(INC_GUI) -c xj380_emu.c -o xj380_emu.o
-	$(CC) $(CFLAGS) $(INC_GUI) -c xj380_gui.c -o xj380_gui.o
+	$(CC) $(CFLAGS) $(INC_GUI) -c src/main.c -o main.o
+	$(CC) $(CFLAGS) $(INC_GUI) -c src/xj380_emu.c -o xj380_emu.o
+	$(CC) $(CFLAGS) $(INC_GUI) -c src/xj380_gui.c -o xj380_gui.o
 	$(CC) $(CFLAGS) -o $(TARGET) main.o xj380_emu.o xj380_gui.o $(LIBS_GUI)
 
 # ============================================================
@@ -56,11 +56,11 @@ gui:
 .PHONY: release
 release:
 	gcc $(WARN) -O3 -flto -funroll-loops -fomit-frame-pointer -DNDEBUG \
-	    $(INC_GUI) -DXJ380_GUI -c main.c -o main.rel.o
+	    $(INC_GUI) -DXJ380_GUI -c src/main.c -o main.rel.o
 	gcc $(WARN) -O3 -flto -funroll-loops -fomit-frame-pointer -DNDEBUG \
-	    $(INC_GUI) -DXJ380_GUI -c xj380_emu.c -o xj380_emu.rel.o
+	    $(INC_GUI) -DXJ380_GUI -c src/xj380_emu.c -o xj380_emu.rel.o
 	gcc $(WARN) -O3 -flto -funroll-loops -fomit-frame-pointer -DNDEBUG \
-	    $(INC_GUI) -DXJ380_GUI -c xj380_gui.c -o xj380_gui.rel.o
+	    $(INC_GUI) -DXJ380_GUI -c src/xj380_gui.c -o xj380_gui.rel.o
 	g++ -O3 -flto -funroll-loops -fomit-frame-pointer -DNDEBUG \
 	    -o $(TARGET) main.rel.o xj380_emu.rel.o xj380_gui.rel.o $(LIBS_GUI)
 	rm -f *.rel.o

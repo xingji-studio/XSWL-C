@@ -65,6 +65,8 @@ typedef struct {
     bool          resizable;
     bool          dirty;
     SDL_Rect      dirty_rect;
+    bool          suppress_textinput;
+    uint64_t      suppress_textinput_value;
 
     /* 控件 */
     struct {
@@ -97,6 +99,8 @@ static bool           g_gui_debug_enabled = true;
 static bool           g_test_events_enabled;
 static bool           g_test_events_pushed;
 
+static void gui_log(const char *fmt, ...);
+
 /* ---- TTF 字体缓存 ---- */
 #define MAX_FONTS 8
 typedef struct {
@@ -116,8 +120,97 @@ static void copy_cstr(char *dst, size_t dst_size, const char *src)
     snprintf(dst, dst_size, "%s", src ? src : "");
 }
 
+static void load_host_font_if_present(const char *vpath, const char *hpath)
+{
+    if (g_font_count >= MAX_FONTS)
+    {
+        return;
+    }
+
+    FILE *fp = fopen(hpath, "rb");
+    if (!fp)
+    {
+        return;
+    }
+
+    if (fseek(fp, 0, SEEK_END) != 0)
+    {
+        fclose(fp);
+        return;
+    }
+    long len = ftell(fp);
+    if (len <= 0)
+    {
+        fclose(fp);
+        return;
+    }
+    rewind(fp);
+
+    uint8_t *data = malloc((size_t)len);
+    if (!data)
+    {
+        fclose(fp);
+        return;
+    }
+
+    size_t got = fread(data, 1, (size_t)len, fp);
+    fclose(fp);
+    if (got != (size_t)len)
+    {
+        free(data);
+        return;
+    }
+
+    cached_font_t *cf = &g_fonts[g_font_count];
+    memset(cf, 0, sizeof(*cf));
+    copy_cstr(cf->path, sizeof(cf->path), vpath);
+    cf->data = data;
+    cf->size = (size_t)len;
+    if (!stbtt_InitFont(&cf->info, cf->data, stbtt_GetFontOffsetForIndex(cf->data, 0)))
+    {
+        free(cf->data);
+        memset(cf, 0, sizeof(*cf));
+        return;
+    }
+    cf->scale = stbtt_ScaleForPixelHeight(&cf->info, 16.0f);
+    g_font_count++;
+    gui_log("[GUI] loaded host font: %s -> %s (%zu bytes)\n", hpath, vpath, (size_t)len);
+}
+
+static void load_default_host_fonts_once(void)
+{
+    static bool attempted = false;
+    if (attempted)
+    {
+        return;
+    }
+    attempted = true;
+
+    const char *root = getenv("XSWL_XJ380_ROOT");
+    if (root && *root)
+    {
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/font/ttf/XJ380C.ttf", root);
+        load_host_font_if_present("/system/font/XJ380C.ttf", path);
+        snprintf(path, sizeof(path), "%s/font/ttf/XJ380F.ttf", root);
+        load_host_font_if_present("/system/font/XJ380F.ttf", path);
+    }
+
+    load_host_font_if_present("/system/font/XJ380C.ttf", "../XJ380/font/ttf/XJ380C.ttf");
+    load_host_font_if_present("/system/font/XJ380F.ttf", "../XJ380/font/ttf/XJ380F.ttf");
+    load_host_font_if_present("/system/font/XJ380C.ttf",
+                              "/home/Bnear8273/Projects/XJ380/font/ttf/XJ380C.ttf");
+    load_host_font_if_present("/system/font/XJ380F.ttf",
+                              "/home/Bnear8273/Projects/XJ380/font/ttf/XJ380F.ttf");
+}
+
 static cached_font_t* find_font(const char *path)
 {
+    if (g_font_count == 0)
+    {
+        load_default_host_fonts_once();
+    }
+
     for (int i = 0; i < g_font_count; i++)
     {
         if (strcmp(g_fonts[i].path, path) == 0)
@@ -127,6 +220,33 @@ static cached_font_t* find_font(const char *path)
     }
 
     return g_font_count > 0 ? &g_fonts[0] : NULL;
+}
+
+static SDL_Surface *load_image_surface(xj380_emu_t *emu, const char *path)
+{
+    const uint8_t *data = NULL;
+    size_t size = 0;
+
+    if (xj380_vfs_read_file(emu, path, &data, &size) == 0 && data && size > 0)
+    {
+        SDL_RWops *rw = SDL_RWFromConstMem(data, (int)size);
+        if (rw)
+        {
+            SDL_Surface *surf = IMG_Load_RW(rw, 1);
+            if (surf)
+            {
+                return surf;
+            }
+        }
+    }
+
+    SDL_Surface *surf = IMG_Load(path);
+    if (!surf && path[0] == '/')
+    {
+        surf = IMG_Load(path + 1);
+    }
+
+    return surf;
 }
 
 
@@ -157,7 +277,7 @@ int xj380_gui_init(void)
     if (g_sdl_initialized) return 0;
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
-        fprintf(stderr, "[GUI] SDL_Init 失败: %s\n", SDL_GetError());
+        fprintf(stderr, "[GUI] SDL_Init failed: %s\n", SDL_GetError());
         return -1;
     }
 
@@ -167,7 +287,7 @@ int xj380_gui_init(void)
     SDL_StartTextInput();
 
     g_sdl_initialized = true;
-    gui_log("[GUI] SDL2 初始化完成\n");
+    gui_log("[GUI] SDL2 initialized\n");
     return 0;
 }
 
@@ -255,22 +375,28 @@ void xj380_gui_create_window(xj380_emu_t *emu, uint64_t handle_ptr, uint64_t xwi
         (int)width, (int)height, sdl_flags);
 
     if (!win) {
-        fprintf(stderr, "[GUI] SDL_CreateWindow 失败: %s\n", SDL_GetError());
+        fprintf(stderr, "[GUI] SDL_CreateWindow failed: %s\n", SDL_GetError());
         /* 写 NULL handle */
         uint64_t zero = 0;
         xj380_mem_write(emu, handle_ptr, &zero, 8);
         return;
     }
 
-    SDL_Renderer *rend = SDL_CreateRenderer(win, -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    uint32_t renderer_flags = SDL_RENDERER_ACCELERATED;
+    const char *vsync_env = getenv("XSWL_VSYNC");
+    if (vsync_env && strcmp(vsync_env, "0") != 0)
+    {
+        renderer_flags |= SDL_RENDERER_PRESENTVSYNC;
+    }
+
+    SDL_Renderer *rend = SDL_CreateRenderer(win, -1, renderer_flags);
     if (!rend)
     {
         rend = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     }
     if (!rend)
     {
-        fprintf(stderr, "[GUI] SDL_CreateRenderer 失败: %s\n", SDL_GetError());
+        fprintf(stderr, "[GUI] SDL_CreateRenderer failed: %s\n", SDL_GetError());
         SDL_DestroyWindow(win);
         uint64_t zero = 0;
         xj380_mem_write(emu, handle_ptr, &zero, 8);
@@ -282,7 +408,7 @@ void xj380_gui_create_window(xj380_emu_t *emu, uint64_t handle_ptr, uint64_t xwi
         (int)width, (int)height);
     if (!tex)
     {
-        fprintf(stderr, "[GUI] SDL_CreateTexture 失败: %s\n", SDL_GetError());
+        fprintf(stderr, "[GUI] SDL_CreateTexture failed: %s\n", SDL_GetError());
         SDL_DestroyRenderer(rend);
         SDL_DestroyWindow(win);
         uint64_t zero = 0;
@@ -336,7 +462,7 @@ void xj380_gui_create_window(xj380_emu_t *emu, uint64_t handle_ptr, uint64_t xwi
     /* 写 handle 回模拟器内存 */
     xj380_mem_write(emu, handle_ptr, &gw->handle, 8);
 
-    gui_log("[GUI] 创建窗口 #%llu: %dx%d \"%s\"\n",
+    gui_log("[GUI] created window #%llu: %dx%d \"%s\"\n",
            (unsigned long long)gw->handle, gw->width, gw->height, gw->title);
 }
 
@@ -356,7 +482,7 @@ void xj380_gui_close_window(xj380_emu_t *emu, uint64_t handle)
             /* 从数组中移除 */
             g_windows[i] = g_windows[--g_window_count];
             g_windows[g_window_count] = NULL;
-            gui_log("[GUI] 关闭窗口 #%llu\n", (unsigned long long)handle);
+            gui_log("[GUI] closed window #%llu\n", (unsigned long long)handle);
             return;
         }
     }
@@ -741,11 +867,7 @@ void xj380_gui_draw_bmp(xj380_emu_t *emu, uint64_t handle,
     char path[512];
     xj380_mem_read_str(emu, path_ptr, path, sizeof(path));
 
-    SDL_Surface *surf = IMG_Load(path);
-    if (!surf && path[0] == 47)
-    {
-        surf = IMG_Load(path + 1);
-    }
+    SDL_Surface *surf = load_image_surface(emu, path);
     if (!surf)
     {
         return;
@@ -956,6 +1078,8 @@ void xj380_gui_refresh_part(xj380_emu_t *emu, uint64_t handle,
 #define XJ380_MSG_CRL     6
 #define XJ380_MSG_SPCHAR  7
 #define XJ380_MSG_RESIZE  8
+#define XJ380_MSG_KEYUP   9
+#define XJ380_MSG_KEYDOWN 10
 
 /* 事件队列 (最多缓存 64 个事件) */
 typedef struct {
@@ -970,12 +1094,129 @@ static int         g_event_tail;
 static void queue_event(uint64_t handle, uint64_t type, uint64_t hData, uint64_t lData)
 {
     int next = (g_event_tail + 1) % 64;
-    if (next == g_event_head) return; /* 队列满 */
+    if (type == XJ380_MSG_MOVE)
+    {
+        int i = g_event_head;
+        while (i != g_event_tail)
+        {
+            if (g_event_queue[i].target_handle == handle
+                && g_event_queue[i].type == XJ380_MSG_MOVE)
+            {
+                g_event_queue[i].hData = hData;
+                g_event_queue[i].lData = lData;
+                return;
+            }
+            i = (i + 1) % 64;
+        }
+    }
+
+    if (next == g_event_head)
+    {
+        int i = g_event_head;
+        while (i != g_event_tail)
+        {
+            if (g_event_queue[i].type == XJ380_MSG_MOVE)
+            {
+                g_event_queue[i].target_handle = handle;
+                g_event_queue[i].type = type;
+                g_event_queue[i].hData = hData;
+                g_event_queue[i].lData = lData;
+                return;
+            }
+            i = (i + 1) % 64;
+        }
+        return;
+    }
     g_event_queue[g_event_tail].type   = type;
     g_event_queue[g_event_tail].hData  = hData;
     g_event_queue[g_event_tail].lData  = lData;
     g_event_queue[g_event_tail].target_handle = handle;
     g_event_tail = next;
+}
+
+static int sdl_key_to_ascii(SDL_Keycode sym, SDL_Keymod mod)
+{
+    bool shift = (mod & KMOD_SHIFT) != 0;
+    bool caps = (mod & KMOD_CAPS) != 0;
+
+    if (sym >= SDLK_a && sym <= SDLK_z)
+    {
+        int ch = 'a' + (int)(sym - SDLK_a);
+        if (shift != caps)
+        {
+            ch = ch - 'a' + 'A';
+        }
+        return ch;
+    }
+
+    if (sym >= SDLK_0 && sym <= SDLK_9)
+    {
+        static const char shifted[] = ")!@#$%^&*(";
+        return shift ? shifted[sym - SDLK_0] : (int)('0' + (sym - SDLK_0));
+    }
+
+    switch (sym)
+    {
+    case SDLK_SPACE: return ' ';
+    case SDLK_MINUS: return shift ? '_' : '-';
+    case SDLK_EQUALS: return shift ? '+' : '=';
+    case SDLK_LEFTBRACKET: return shift ? '{' : '[';
+    case SDLK_RIGHTBRACKET: return shift ? '}' : ']';
+    case SDLK_BACKSLASH: return shift ? '|' : '\\';
+    case SDLK_SEMICOLON: return shift ? ':' : ';';
+    case SDLK_QUOTE: return shift ? '"' : '\'';
+    case SDLK_COMMA: return shift ? '<' : ',';
+    case SDLK_PERIOD: return shift ? '>' : '.';
+    case SDLK_SLASH: return shift ? '?' : '/';
+    case SDLK_BACKQUOTE: return shift ? '~' : '`';
+    default: return -1;
+    }
+}
+
+static int sdl_key_to_xj380_key(SDL_Keycode sym, SDL_Keymod mod)
+{
+    switch (sym)
+    {
+    case SDLK_ESCAPE: return 128;
+    case SDLK_BACKSPACE: return '\b';
+    case SDLK_TAB: return 130;
+    case SDLK_RETURN: return '\n';
+    case SDLK_CAPSLOCK: return 132;
+    case SDLK_LSHIFT:
+    case SDLK_RSHIFT: return 133;
+    case SDLK_LCTRL:
+    case SDLK_RCTRL: return 134;
+    case SDLK_LALT:
+    case SDLK_RALT: return 135;
+    case SDLK_SPACE: return 136;
+    case SDLK_F1: return 137;
+    case SDLK_F2: return 138;
+    case SDLK_F3: return 139;
+    case SDLK_F4: return 140;
+    case SDLK_F5: return 141;
+    case SDLK_F6: return 142;
+    case SDLK_F7: return 143;
+    case SDLK_F8: return 144;
+    case SDLK_F9: return 145;
+    case SDLK_F10: return 146;
+    case SDLK_F11: return 147;
+    case SDLK_F12: return 148;
+    case SDLK_NUMLOCKCLEAR: return 149;
+    case SDLK_SCROLLLOCK: return 150;
+    case SDLK_HOME: return 151;
+    case SDLK_UP: return 152;
+    case SDLK_PAGEUP: return 153;
+    case SDLK_LEFT: return 154;
+    case SDLK_RIGHT: return 155;
+    case SDLK_END: return 156;
+    case SDLK_DOWN: return 157;
+    case SDLK_PAGEDOWN: return 158;
+    case SDLK_INSERT: return 159;
+    case SDLK_DELETE: return 160;
+    default: break;
+    }
+
+    return sdl_key_to_ascii(sym, mod);
 }
 
 static uint64_t pack_utf8_bytes(const char *text, int len)
@@ -1003,7 +1244,11 @@ static void push_test_sdl_events(gui_window_t *gw)
     queue_event(gw->handle, XJ380_MSG_SPCHAR, 0, 128);
     queue_event(gw->handle, XJ380_MSG_MOVE, 11, 22);
     queue_event(gw->handle, XJ380_MSG_LBUTTON, 33, 44);
+    queue_event(gw->handle, XJ380_MSG_RBUTTON, 45, 46);
+    queue_event(gw->handle, XJ380_MSG_MBUTTON, 47, 48);
     queue_event(gw->handle, XJ380_MSG_ROLLER, ((uint64_t)55 << 32) | 66, 1);
+    queue_event(gw->handle, XJ380_MSG_CRL, 3001, 0);
+    queue_event(gw->handle, XJ380_MSG_RESIZE, 0, 0);
 
     g_test_events_pushed = true;
 }
@@ -1164,8 +1409,16 @@ int xj380_gui_poll_events(xj380_emu_t *emu)
                     p++;
                     continue;
                 }
-                queue_event(gw->handle, XJ380_MSG_CHAR,
-                    0, pack_utf8_bytes(p, utf8_len));
+                uint64_t packed = pack_utf8_bytes(p, utf8_len);
+                if (gw->suppress_textinput
+                    && gw->suppress_textinput_value == packed)
+                {
+                    gw->suppress_textinput = false;
+                    p += utf8_len;
+                    continue;
+                }
+                gw->suppress_textinput = false;
+                queue_event(gw->handle, XJ380_MSG_CHAR, 0, packed);
                 p += utf8_len;
             }
             break;
@@ -1173,34 +1426,32 @@ int xj380_gui_poll_events(xj380_emu_t *emu)
 
         /* ---- 键盘: 特殊键 ---- */
         case SDL_KEYDOWN: {
-            int sp = -1;
-            switch (ev.key.keysym.sym) {
-            case SDLK_ESCAPE:    sp = 128; break;
-            case SDLK_BACKSPACE: sp = '\b'; break;
-            case SDLK_TAB:       sp = 130; break;
-            case SDLK_RETURN:    sp = '\n'; break;
-            case SDLK_CAPSLOCK:  sp = 132; break;
-            case SDLK_LSHIFT: case SDLK_RSHIFT: sp = 133; break;
-            case SDLK_LCTRL: case SDLK_RCTRL:   sp = 134; break;
-            case SDLK_LALT: case SDLK_RALT:     sp = 135; break;
-            case SDLK_F1:  sp = 136; break; case SDLK_F2:  sp = 137; break;
-            case SDLK_F3:  sp = 138; break; case SDLK_F4:  sp = 139; break;
-            case SDLK_F5:  sp = 140; break; case SDLK_F6:  sp = 141; break;
-            case SDLK_F7:  sp = 142; break; case SDLK_F8:  sp = 143; break;
-            case SDLK_F9:  sp = 144; break; case SDLK_F10: sp = 145; break;
-            case SDLK_F11: sp = 146; break; case SDLK_F12: sp = 147; break;
-            case SDLK_NUMLOCKCLEAR: sp = 149; break;
-            case SDLK_SCROLLLOCK:   sp = 150; break;
-            default: break;
-            }
-            if (sp >= 0) {
-                queue_event(gw->handle, XJ380_MSG_SPCHAR, 0, (uint64_t)sp);
+            int key = sdl_key_to_xj380_key(ev.key.keysym.sym, ev.key.keysym.mod);
+            if (key >= 0)
+            {
+                queue_event(gw->handle, XJ380_MSG_KEYDOWN, 0, (uint64_t)(uint8_t)key);
+                if (key == '\n' || key == '\b' || key >= 128)
+                {
+                    queue_event(gw->handle, XJ380_MSG_SPCHAR, 0, (uint64_t)(uint8_t)key);
+                }
+                else
+                {
+                    queue_event(gw->handle, XJ380_MSG_CHAR, 0, (uint64_t)(uint8_t)key);
+                    gw->suppress_textinput = true;
+                    gw->suppress_textinput_value = (uint64_t)(uint8_t)key;
+                }
             }
             break;
         }
 
-        case SDL_KEYUP:
+        case SDL_KEYUP: {
+            int key = sdl_key_to_xj380_key(ev.key.keysym.sym, ev.key.keysym.mod);
+            if (key >= 0)
+            {
+                queue_event(gw->handle, XJ380_MSG_KEYUP, 0, (uint64_t)(uint8_t)key);
+            }
             break;
+        }
 
         case SDL_QUIT:
             return 1;
@@ -1237,7 +1488,7 @@ void xj380_gui_load_font(const char *vpath, const uint8_t *data, size_t size)
     }
     cf->scale = stbtt_ScaleForPixelHeight(&cf->info, 16.0f);
     g_font_count++;
-    gui_log("[GUI] 字体加载: %s (%zu bytes)\n", vpath, size);
+    gui_log("[GUI] loaded font: %s (%zu bytes)\n", vpath, size);
 }
 
 void xj380_gui_store_callback(xj380_emu_t *emu, uint64_t handle, uint64_t func)
@@ -1393,8 +1644,7 @@ void xj380_gui_get_pic_size(xj380_emu_t *emu, uint64_t path_ptr,
 {
     char path[512] = {0};
     xj380_mem_read_str(emu, path_ptr, path, sizeof(path));
-    SDL_Surface *s = IMG_Load(path);
-    if (!s && path[0] == '/') s = IMG_Load(path + 1);
+    SDL_Surface *s = load_image_surface(emu, path);
     if (s) {
         uint32_t w = (uint32_t)s->w, h = (uint32_t)s->h;
         if (width_ptr)  xj380_mem_write(emu, width_ptr,  &w, 4);
