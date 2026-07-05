@@ -65,18 +65,22 @@ Native mode maps static x86_64 XJ380 ELF programs into the host process and
 patches their `enter_syscall` symbol to call XSWL-C directly. It is still a
 compatibility subset, but now covers the native smoke path plus common GUI
 startup calls: `brk`, `Output`, `PrintLine`, `Exit`, `OpenFile`, `ReadFile`,
-`CloseFile`, `SearchFile`, selected POSIX read-only file calls, `CreateWindow`,
-`GetWindowSize`, `SetMsgPrcor`, `SetWindowTitle`, basic text/drawing no-ops,
-`ReadBuffer`, `WriteBuffer`, `RefreshWindow`, `FlushTime`, `Sleep`, and common
-system queries. Process creation and private XJ380 kernel service calls are not
-emulated; they fail conservatively.
+`CloseFile`, `SearchFile`, selected POSIX read-only file calls, terminal input
+stubs, `CreateWindow`, `GetWindowSize`, `SetMsgPrcor`, `SetWindowTitle`, basic
+text/drawing no-ops, `ReadBuffer`, `WriteBuffer`, `RefreshWindow`, `FlushTime`,
+`Sleep`, and common system queries. Private terminal service calls used by
+XJ380's console startup are simulated. Private installer service calls are also
+simulated, but installation and boot repair always fail safely so native mode
+never writes host disks.
 
 Native `fork` is supported for non-GUI programs. `SYS_FORK` and `XAPI_FORK`
 return a child PID in the parent and `0` in the child; `SYS_WAIT4` can reap
 children and reports normal exit status. If a native program has created a
 window, `fork` returns failure to avoid duplicating GUI/window state.
-Unsupported XAPI calls fail fast with a diagnostic instead of falling back
-inside the same process. Use the default Unicorn path for full compatibility.
+`Execve("/apps/system/shell.elf")` has a narrow compatibility path for XJ380's
+terminal launcher parent. Other exec calls and unsupported XAPI calls fail fast
+with a diagnostic instead of falling back inside the same process. Use the
+default Unicorn path for full compatibility.
 
 ## Test
 
@@ -90,8 +94,9 @@ The GUI event test uses SDL's dummy video driver, so it can run without a
 display server. The native smoke test verifies fixed-address ELF loading,
 `enter_syscall` patching, `brk`, basic file access, minimal GUI/window calls,
 framebuffer no-op compatibility, `Sleep`, `PrintLine`, and `Exit`.
-The native fork test verifies `SYS_FORK`, `XAPI_FORK`, `SYS_WAIT4`, child exit
-status, and the non-GUI fork path.
+The native fork test verifies terminal stubs, installer private syscall stubs,
+`SYS_GETGROUPS`, `SYS_FORK`, `XAPI_FORK`, `SYS_WAIT4`, child exit status, and
+the non-GUI fork path.
 
 ## Covered XAPI Areas
 

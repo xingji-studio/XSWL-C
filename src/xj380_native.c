@@ -33,6 +33,8 @@
 #define SYS_EXECVE 59ULL
 #define SYS_WAIT4 61ULL
 #define SYS_KILL 62ULL
+#define SYS_GETCWD 79ULL
+#define SYS_CHDIR 80ULL
 #define SYS_BRK 12ULL
 #define SYS_ARCH_PRCTL 158ULL
 #define SYS_GETUID 102ULL
@@ -46,6 +48,10 @@
 
 #define XAPI_PRINTLINE 7385ULL
 #define XAPI_OUTPUT 7381ULL
+#define XAPI_INPUT 7382ULL
+#define XAPI_GETCH 7383ULL
+#define XAPI_ENDLINE 7384ULL
+#define XAPI_GETLINE 7418ULL
 #define XAPI_PRINTF 7386ULL
 #define XAPI_OPEN_FILE 7387ULL
 #define XAPI_CLOSE_FILE 7388ULL
@@ -67,6 +73,7 @@
 #define XAPI_DRAW_TEXT_SW 7415ULL
 #define XAPI_DRAW_PICTURE 7419ULL
 #define XAPI_GET_CURRENT_USER 7413ULL
+#define XAPI_GET_TIME 7412ULL
 #define XAPI_GET_WINDOW_SIZE 7426ULL
 #define XAPI_CALC_TEXT_WIDTH 7431ULL
 #define XAPI_DELETE_BUTTON 7432ULL
@@ -96,6 +103,53 @@
 #define XAPI_DEL_TEXT_INBOX 7458ULL
 #define XAPI_EXIT 60ULL
 #define XAPI_EXIT_GROUP 231ULL
+
+#define SXAH_CHECK_TERMINAL_INIT_STATUS 3801ULL
+#define SXAH_MARK_IS_TERMINAL 128956723895689204ULL
+#define SXAH_WRITE_INPUT_BUFFER 128956723895689205ULL
+#define SXAH_READ_OUTPUT_BUFFER 128956723895689206ULL
+#define SXAH_CHECK_INPUT_BUFFER 128956723895689207ULL
+#define SXAH_UNLOCK_OUTPUT_LOCK 128956723895689208ULL
+#define SXAH_MESSAGE_ASK 128956723895689209ULL
+#define SXAH_INSTALLER_ENUM_DISKS 128956723895689220ULL
+#define SXAH_INSTALLER_START 128956723895689221ULL
+#define SXAH_INSTALLER_PROGRESS 128956723895689222ULL
+#define SXAH_INSTALLER_PRECHECK 128956723895689223ULL
+#define SXAH_INSTALLER_START_EX 128956723895689224ULL
+#define SXAH_INSTALLER_RESCUE 128956723895689225ULL
+#define SXAH_INSTALLER_LOG 128956723895689226ULL
+#define SXAH_INSTALLER_START_OPTIONS 128956723895689227ULL
+#define SXAH_INSTALLER_PRECHECK_OPTIONS 128956723895689228ULL
+
+#define XJ380_INSTALLER_MAX_DISKS 32U
+#define XJ380_INSTALLER_DISK_NAME_LEN 48U
+#define XJ380_INSTALLER_STAGE_LEN 96U
+#define XJ380_INSTALLER_DETAIL_LEN 192U
+#define XJ380_INSTALLER_QUEUE_ITEMS 16U
+#define XJ380_INSTALLER_QUEUE_LEN 128U
+#define XJ380_INSTALLER_CHECK_ITEMS 12U
+#define XJ380_INSTALLER_RESCUE_ITEMS 16U
+#define XJ380_INSTALLER_LOG_LINES 24U
+#define XJ380_INSTALLER_LOG_LEN 160U
+
+#define XJ380_INSTALLER_DISK_FLAG_WRITABLE (1ULL << 0)
+#define XJ380_INSTALLER_DISK_FLAG_SECTOR_512 (1ULL << 3)
+
+#define XJ380_INSTALLER_MODE_DEVELOPER 3U
+#define XJ380_INSTALLER_COMPONENT_DEFAULT 0xFULL
+
+#define XJ380_INSTALLER_CHECK_OK 0U
+#define XJ380_INSTALLER_CHECK_WARN 1U
+#define XJ380_INSTALLER_CHECK_ERROR 2U
+
+#define XJ380_INSTALLER_RESCUE_REBUILD_BOOT 1ULL
+#define XJ380_INSTALLER_RESCUE_CHECK_DISK 2ULL
+#define XJ380_INSTALLER_RESCUE_VIEW_DISK 3ULL
+#define XJ380_INSTALLER_RESCUE_OPEN_TERM 4ULL
+#define XJ380_INSTALLER_RESCUE_VIEW_LOG 5ULL
+
+#define XJ380_INSTALLER_IDLE 0U
+#define XJ380_INSTALLER_FAILED 3U
 
 #define PT_LOAD 1U
 #define SHT_SYMTAB 2U
@@ -206,6 +260,93 @@ typedef struct {
     int32_t tm_isdst;
 } NativeTimeType;
 
+typedef struct {
+    uint32_t id;
+    uint32_t sector_size;
+    uint64_t size_bytes;
+    uint64_t flags;
+    char name[XJ380_INSTALLER_DISK_NAME_LEN];
+} NativeInstallerDisk;
+
+typedef struct {
+    uint32_t count;
+    uint32_t reserved;
+    NativeInstallerDisk disks[XJ380_INSTALLER_MAX_DISKS];
+} NativeInstallerDiskList;
+
+typedef struct {
+    uint32_t status;
+    uint32_t code;
+    char title[64];
+    char detail[XJ380_INSTALLER_DETAIL_LEN];
+} NativeInstallerCheckItem;
+
+typedef struct {
+    uint32_t disk_id;
+    uint32_t mode;
+    uint64_t components;
+} NativeInstallerStartOptions;
+
+typedef struct {
+    uint32_t disk_id;
+    uint32_t mode;
+    uint32_t item_count;
+    uint32_t can_continue;
+    uint64_t components;
+    uint64_t payload_bytes;
+    uint64_t required_bytes;
+    uint64_t target_bytes;
+    uint64_t efi_first_lba;
+    uint64_t efi_last_lba;
+    NativeInstallerCheckItem items[XJ380_INSTALLER_CHECK_ITEMS];
+} NativeInstallerPrecheck;
+
+typedef struct {
+    uint32_t state;
+    uint32_t percent;
+    int64_t result;
+    char stage[XJ380_INSTALLER_STAGE_LEN];
+    char detail[XJ380_INSTALLER_DETAIL_LEN];
+    uint32_t queue_index;
+    uint32_t queue_total;
+    uint32_t queue_count;
+    uint32_t queue_reserved;
+    char queue_items[XJ380_INSTALLER_QUEUE_ITEMS][XJ380_INSTALLER_QUEUE_LEN];
+    uint32_t mode;
+    uint32_t stage_percent;
+    uint32_t total_percent;
+    uint32_t small_file_count;
+    uint32_t large_file_count;
+    uint32_t copied_small_file_count;
+    uint32_t copied_large_file_count;
+    uint64_t bytes_per_second;
+    uint64_t eta_seconds;
+    uint64_t copied_bytes;
+    uint64_t total_bytes;
+    uint64_t current_file_bytes;
+    uint64_t current_file_size;
+} NativeInstallerProgress;
+
+typedef struct {
+    uint32_t status;
+    uint32_t code;
+    char title[64];
+    char detail[XJ380_INSTALLER_DETAIL_LEN];
+} NativeInstallerRescueItem;
+
+typedef struct {
+    int64_t result;
+    uint32_t item_count;
+    uint32_t reserved;
+    NativeInstallerRescueItem items[XJ380_INSTALLER_RESCUE_ITEMS];
+} NativeInstallerRescueResult;
+
+typedef struct {
+    uint32_t count;
+    uint32_t reserved;
+    char lines[XJ380_INSTALLER_LOG_LINES][XJ380_INSTALLER_LOG_LEN];
+} NativeInstallerLog;
+
 #define NATIVE_MAX_WINDOWS 64U
 #define NATIVE_MAX_FDS 64U
 
@@ -215,12 +356,14 @@ static jmp_buf g_exit_jmp;
 static int g_exit_code;
 static bool g_debug_enabled;
 static bool g_native_is_fork_child;
+static pid_t g_last_native_child_pid;
 static uint64_t g_brk_addr;
 static uint64_t g_brk_map_end;
 static uint64_t g_fs_base;
 static NativeWindow g_native_windows[NATIVE_MAX_WINDOWS];
 static uint64_t g_next_window_handle;
 static NativeFd g_native_fds[NATIVE_MAX_FDS];
+static NativeInstallerProgress g_native_installer_progress;
 
 static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
                                            uint64_t arg2, uint64_t arg3,
@@ -702,6 +845,7 @@ static uint64_t native_fork_process(void)
     {
         fprintf(stderr, "[native] fork parent child=%d\n", (int)pid);
     }
+    g_last_native_child_pid = pid;
     return (uint64_t)pid;
 }
 
@@ -730,6 +874,38 @@ static uint64_t native_wait4_process(uint64_t pid_arg, uint64_t status_ptr,
         *(int *)(uintptr_t)status_ptr = status;
     }
     return (uint64_t)waited;
+}
+
+static uint64_t native_execve_process(uint64_t path_ptr)
+{
+    if (!path_ptr)
+    {
+        return (uint64_t)-1;
+    }
+
+    const char *path = (const char *)(uintptr_t)path_ptr;
+    if (strcmp(path, "/apps/system/shell.elf") != 0 || g_last_native_child_pid <= 0)
+    {
+        return (uint64_t)-1;
+    }
+
+    int status = 0;
+    pid_t waited = waitpid(g_last_native_child_pid, &status, 0);
+    if (waited == g_last_native_child_pid)
+    {
+        g_last_native_child_pid = 0;
+        if (WIFEXITED(status))
+        {
+            g_exit_code = WEXITSTATUS(status);
+        }
+        else
+        {
+            g_exit_code = 1;
+        }
+        longjmp(g_exit_jmp, 1);
+    }
+
+    return (uint64_t)-1;
 }
 
 static uint64_t native_create_window(uint64_t handle_ptr, uint64_t xwindow_ptr)
@@ -877,6 +1053,277 @@ static uint64_t native_get_current_user(uint64_t user_info_ptr)
     snprintf(info->name, sizeof(info->name), "%s", "Root");
     info->user_type = 0;
     return 1;
+}
+
+static void native_copy_text(char *dst, size_t dst_size, const char *src)
+{
+    if (!dst || dst_size == 0)
+    {
+        return;
+    }
+    snprintf(dst, dst_size, "%s", src ? src : "");
+}
+
+static uint64_t native_installer_enum_disks(uint64_t list_ptr)
+{
+    if (!list_ptr)
+    {
+        return (uint64_t)-EINVAL;
+    }
+
+    NativeInstallerDiskList *list = (NativeInstallerDiskList *)(uintptr_t)list_ptr;
+    memset(list, 0, sizeof(*list));
+    list->count = 1;
+    list->disks[0].id = 0;
+    list->disks[0].sector_size = 512;
+    list->disks[0].size_bytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+    list->disks[0].flags = XJ380_INSTALLER_DISK_FLAG_WRITABLE
+        | XJ380_INSTALLER_DISK_FLAG_SECTOR_512;
+    native_copy_text(list->disks[0].name, sizeof(list->disks[0].name),
+                     "XSWL native simulated disk");
+    return list->count;
+}
+
+static void native_installer_add_check(NativeInstallerPrecheck *check,
+                                       uint32_t status, uint32_t code,
+                                       const char *title, const char *detail)
+{
+    if (!check || check->item_count >= XJ380_INSTALLER_CHECK_ITEMS)
+    {
+        return;
+    }
+
+    NativeInstallerCheckItem *item = &check->items[check->item_count++];
+    memset(item, 0, sizeof(*item));
+    item->status = status;
+    item->code = code;
+    native_copy_text(item->title, sizeof(item->title), title);
+    native_copy_text(item->detail, sizeof(item->detail), detail);
+}
+
+static int64_t native_installer_fill_precheck(uint32_t disk_id, uint32_t mode,
+                                              uint64_t components,
+                                              NativeInstallerPrecheck *check)
+{
+    if (!check)
+    {
+        return -EINVAL;
+    }
+
+    memset(check, 0, sizeof(*check));
+    check->disk_id = disk_id;
+    check->mode = mode;
+    check->components = components ? components : XJ380_INSTALLER_COMPONENT_DEFAULT;
+    check->payload_bytes = 0;
+    check->required_bytes = 0;
+    check->target_bytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+    native_installer_add_check(check, XJ380_INSTALLER_CHECK_OK, 0,
+                               "Native runtime",
+                               "XSWL-C is running this installer UI outside XJ380.");
+    native_installer_add_check(check, XJ380_INSTALLER_CHECK_ERROR, EROFS,
+                               "Installation disabled",
+                               "Native simulation never writes host disks.");
+    check->can_continue = 0;
+    return -EROFS;
+}
+
+static uint64_t native_installer_precheck(uint64_t disk_id, uint64_t mode,
+                                          uint64_t out_ptr)
+{
+    if (!out_ptr || disk_id >= 256 || mode > XJ380_INSTALLER_MODE_DEVELOPER)
+    {
+        return (uint64_t)-EINVAL;
+    }
+
+    NativeInstallerPrecheck *out = (NativeInstallerPrecheck *)(uintptr_t)out_ptr;
+    int64_t result = native_installer_fill_precheck((uint32_t)disk_id,
+                                                    (uint32_t)mode,
+                                                    XJ380_INSTALLER_COMPONENT_DEFAULT,
+                                                    out);
+    return (uint64_t)result;
+}
+
+static uint64_t native_installer_precheck_options(uint64_t options_ptr,
+                                                  uint64_t out_ptr)
+{
+    if (!options_ptr || !out_ptr)
+    {
+        return (uint64_t)-EINVAL;
+    }
+
+    NativeInstallerStartOptions *options =
+        (NativeInstallerStartOptions *)(uintptr_t)options_ptr;
+    if (options->disk_id >= 256 || options->mode > XJ380_INSTALLER_MODE_DEVELOPER)
+    {
+        return (uint64_t)-EINVAL;
+    }
+
+    NativeInstallerPrecheck *out = (NativeInstallerPrecheck *)(uintptr_t)out_ptr;
+    int64_t result = native_installer_fill_precheck(options->disk_id,
+                                                    options->mode,
+                                                    options->components,
+                                                    out);
+    return (uint64_t)result;
+}
+
+static void native_installer_set_failed_progress(int64_t result,
+                                                 const char *stage,
+                                                 const char *detail)
+{
+    memset(&g_native_installer_progress, 0, sizeof(g_native_installer_progress));
+    g_native_installer_progress.state = XJ380_INSTALLER_FAILED;
+    g_native_installer_progress.percent = 0;
+    g_native_installer_progress.result = result;
+    native_copy_text(g_native_installer_progress.stage,
+                     sizeof(g_native_installer_progress.stage), stage);
+    native_copy_text(g_native_installer_progress.detail,
+                     sizeof(g_native_installer_progress.detail), detail);
+}
+
+static uint64_t native_installer_start(uint64_t disk_id, uint64_t mode,
+                                       uint64_t components)
+{
+    (void)components;
+    if (disk_id >= 256 || mode > XJ380_INSTALLER_MODE_DEVELOPER)
+    {
+        return (uint64_t)-EINVAL;
+    }
+
+    native_installer_set_failed_progress(-EROFS, "Installation disabled",
+                                         "XSWL-C native mode does not write host disks.");
+    return (uint64_t)-EROFS;
+}
+
+static uint64_t native_installer_start_options(uint64_t options_ptr)
+{
+    if (!options_ptr)
+    {
+        return (uint64_t)-EINVAL;
+    }
+
+    NativeInstallerStartOptions *options =
+        (NativeInstallerStartOptions *)(uintptr_t)options_ptr;
+    return native_installer_start(options->disk_id, options->mode,
+                                  options->components);
+}
+
+static uint64_t native_installer_progress(uint64_t progress_ptr)
+{
+    if (!progress_ptr)
+    {
+        return (uint64_t)-EINVAL;
+    }
+
+    NativeInstallerProgress *progress =
+        (NativeInstallerProgress *)(uintptr_t)progress_ptr;
+    if (g_native_installer_progress.state == 0
+        && g_native_installer_progress.result == 0
+        && g_native_installer_progress.stage[0] == '\0')
+    {
+        memset(progress, 0, sizeof(*progress));
+        progress->state = XJ380_INSTALLER_IDLE;
+        native_copy_text(progress->stage, sizeof(progress->stage), "Idle");
+        native_copy_text(progress->detail, sizeof(progress->detail),
+                         "No native installer task is running.");
+        return 0;
+    }
+
+    memcpy(progress, &g_native_installer_progress, sizeof(*progress));
+    return 0;
+}
+
+static void native_installer_add_rescue(NativeInstallerRescueResult *result,
+                                        uint32_t status, uint32_t code,
+                                        const char *title, const char *detail)
+{
+    if (!result || result->item_count >= XJ380_INSTALLER_RESCUE_ITEMS)
+    {
+        return;
+    }
+
+    NativeInstallerRescueItem *item = &result->items[result->item_count++];
+    memset(item, 0, sizeof(*item));
+    item->status = status;
+    item->code = code;
+    native_copy_text(item->title, sizeof(item->title), title);
+    native_copy_text(item->detail, sizeof(item->detail), detail);
+}
+
+static uint64_t native_installer_rescue(uint64_t action, uint64_t disk_id,
+                                        uint64_t out_ptr)
+{
+    if (!out_ptr || disk_id >= 256)
+    {
+        return (uint64_t)-EINVAL;
+    }
+
+    NativeInstallerRescueResult *result =
+        (NativeInstallerRescueResult *)(uintptr_t)out_ptr;
+    memset(result, 0, sizeof(*result));
+
+    if (action == XJ380_INSTALLER_RESCUE_VIEW_LOG)
+    {
+        native_installer_add_rescue(result, XJ380_INSTALLER_CHECK_OK, 0,
+                                    "Native installer log",
+                                    "Use xapi_InstallerLog for the simulated log.");
+        return 0;
+    }
+    if (action == XJ380_INSTALLER_RESCUE_VIEW_DISK)
+    {
+        native_installer_add_rescue(result, XJ380_INSTALLER_CHECK_WARN, 0,
+                                    "Simulated disk",
+                                    "The disk exists only for UI compatibility.");
+        return 0;
+    }
+    if (action == XJ380_INSTALLER_RESCUE_CHECK_DISK)
+    {
+        native_installer_add_rescue(result, XJ380_INSTALLER_CHECK_ERROR, EROFS,
+                                    "Installation disabled",
+                                    "Native simulation never writes host disks.");
+        result->result = -EROFS;
+        return (uint64_t)result->result;
+    }
+    if (action == XJ380_INSTALLER_RESCUE_OPEN_TERM)
+    {
+        native_installer_add_rescue(result, XJ380_INSTALLER_CHECK_WARN, ENOSYS,
+                                    "Terminal unavailable",
+                                    "Native installer rescue does not spawn a shell.");
+        result->result = -ENOSYS;
+        return (uint64_t)result->result;
+    }
+    if (action == XJ380_INSTALLER_RESCUE_REBUILD_BOOT)
+    {
+        native_installer_add_rescue(result, XJ380_INSTALLER_CHECK_ERROR, EROFS,
+                                    "Boot repair disabled",
+                                    "Native simulation never writes boot files.");
+        result->result = -EROFS;
+        return (uint64_t)result->result;
+    }
+
+    native_installer_add_rescue(result, XJ380_INSTALLER_CHECK_ERROR, EINVAL,
+                                "Unknown rescue action",
+                                "The native runtime does not support this action.");
+    result->result = -EINVAL;
+    return (uint64_t)result->result;
+}
+
+static uint64_t native_installer_log(uint64_t log_ptr)
+{
+    if (!log_ptr)
+    {
+        return (uint64_t)-EINVAL;
+    }
+
+    NativeInstallerLog *log = (NativeInstallerLog *)(uintptr_t)log_ptr;
+    memset(log, 0, sizeof(*log));
+    log->count = 3;
+    native_copy_text(log->lines[0], sizeof(log->lines[0]),
+                     "XSWL-C native installer compatibility mode.");
+    native_copy_text(log->lines[1], sizeof(log->lines[1]),
+                     "Disk writes are intentionally disabled.");
+    native_copy_text(log->lines[2], sizeof(log->lines[2]),
+                     "Run under XJ380 for real installation behavior.");
+    return 0;
 }
 
 static uint64_t native_get_pic_size(uint64_t width_ptr, uint64_t height_ptr)
@@ -1069,9 +1516,27 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     {
         return g_native_is_fork_child ? (uint64_t)getpid() : 1;
     }
-    if (syscall_no == SYS_SOCKET || syscall_no == SYS_EXECVE || syscall_no == SYS_KILL)
+    if (syscall_no == SYS_EXECVE)
+    {
+        return native_execve_process(arg1);
+    }
+    if (syscall_no == SYS_SOCKET || syscall_no == SYS_KILL)
     {
         return (uint64_t)-1;
+    }
+    if (syscall_no == SYS_GETCWD)
+    {
+        const char cwd[] = "/";
+        if (!arg1 || arg2 < sizeof(cwd))
+        {
+            return (uint64_t)-1;
+        }
+        memcpy((void *)(uintptr_t)arg1, cwd, sizeof(cwd));
+        return arg1;
+    }
+    if (syscall_no == SYS_CHDIR)
+    {
+        return 0;
     }
     if (syscall_no == SYS_GETUID || syscall_no == SYS_GETGID
         || syscall_no == SYS_GETEUID || syscall_no == SYS_GETEGID)
@@ -1080,6 +1545,11 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     }
     if (syscall_no == SYS_GETGROUPS)
     {
+        if (arg1 > 0 && arg2)
+        {
+            *(uint32_t *)(uintptr_t)arg2 = 0;
+            return 1;
+        }
         return 0;
     }
     if (syscall_no == SYS_BRK)
@@ -1143,6 +1613,24 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
         }
         return 0;
     }
+    if (syscall_no == XAPI_INPUT || syscall_no == XAPI_GETLINE)
+    {
+        if (arg1)
+        {
+            ((char *)(uintptr_t)arg1)[0] = '\0';
+        }
+        return 0;
+    }
+    if (syscall_no == XAPI_GETCH)
+    {
+        return 0;
+    }
+    if (syscall_no == XAPI_ENDLINE)
+    {
+        fputc('\n', stdout);
+        fflush(stdout);
+        return 0;
+    }
     if (syscall_no == XAPI_PRINTF)
     {
         if (arg1)
@@ -1183,7 +1671,7 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     }
     if (syscall_no == XAPI_EXECVE)
     {
-        return (uint64_t)-1;
+        return native_execve_process(arg1);
     }
     if (syscall_no == XAPI_READ_FILE)
     {
@@ -1228,6 +1716,10 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     if (syscall_no == XAPI_GET_CURRENT_USER)
     {
         return native_get_current_user(arg1);
+    }
+    if (syscall_no == XAPI_GET_TIME)
+    {
+        return (uint64_t)time(NULL);
     }
     if (syscall_no == XAPI_USER_LIST)
     {
@@ -1338,6 +1830,67 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     if (syscall_no == XAPI_USER_OOBE_REQUIRED)
     {
         return 0;
+    }
+    if (syscall_no == SXAH_CHECK_TERMINAL_INIT_STATUS)
+    {
+        return 1;
+    }
+    if (syscall_no == SXAH_MARK_IS_TERMINAL)
+    {
+        return 0;
+    }
+    if (syscall_no == SXAH_READ_OUTPUT_BUFFER)
+    {
+        if (arg1)
+        {
+            ((char *)(uintptr_t)arg1)[0] = '\0';
+        }
+        return 0;
+    }
+    if (syscall_no == SXAH_WRITE_INPUT_BUFFER
+        || syscall_no == SXAH_UNLOCK_OUTPUT_LOCK)
+    {
+        return 0;
+    }
+    if (syscall_no == SXAH_CHECK_INPUT_BUFFER || syscall_no == SXAH_MESSAGE_ASK)
+    {
+        return 0;
+    }
+    if (syscall_no == SXAH_INSTALLER_ENUM_DISKS)
+    {
+        return native_installer_enum_disks(arg1);
+    }
+    if (syscall_no == SXAH_INSTALLER_START)
+    {
+        return native_installer_start(arg1, 0, XJ380_INSTALLER_COMPONENT_DEFAULT);
+    }
+    if (syscall_no == SXAH_INSTALLER_PROGRESS)
+    {
+        return native_installer_progress(arg1);
+    }
+    if (syscall_no == SXAH_INSTALLER_PRECHECK)
+    {
+        return native_installer_precheck(arg1, arg2, arg3);
+    }
+    if (syscall_no == SXAH_INSTALLER_START_EX)
+    {
+        return native_installer_start(arg1, arg2, XJ380_INSTALLER_COMPONENT_DEFAULT);
+    }
+    if (syscall_no == SXAH_INSTALLER_RESCUE)
+    {
+        return native_installer_rescue(arg1, arg2, arg3);
+    }
+    if (syscall_no == SXAH_INSTALLER_LOG)
+    {
+        return native_installer_log(arg1);
+    }
+    if (syscall_no == SXAH_INSTALLER_START_OPTIONS)
+    {
+        return native_installer_start_options(arg1);
+    }
+    if (syscall_no == SXAH_INSTALLER_PRECHECK_OPTIONS)
+    {
+        return native_installer_precheck_options(arg1, arg2);
     }
     if (syscall_no == XAPI_EXIT || syscall_no == XAPI_EXIT_GROUP)
     {
@@ -1463,6 +2016,7 @@ int xj380_native_run(const char *path, int argc, char **argv, bool debug_enabled
     g_exit_code = 0;
     g_debug_enabled = debug_enabled;
     g_native_is_fork_child = false;
+    g_last_native_child_pid = 0;
     native_set_app_dir(path);
     g_brk_addr = 0;
     g_brk_map_end = 0;
