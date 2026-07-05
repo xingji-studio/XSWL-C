@@ -17,6 +17,12 @@
 #define SYS_BRK 12ULL
 #define XAPI_PRINTLINE 7385ULL
 #define XAPI_OUTPUT 7381ULL
+#define XAPI_CREATE_WINDOW 7392ULL
+#define XAPI_DRAW_RECT 7398ULL
+#define XAPI_DRAW_RECT_FILL 7399ULL
+#define XAPI_SET_MSG_PRCOR 7405ULL
+#define XAPI_REFRESH_WINDOW 7409ULL
+#define XAPI_FLUSH_TIME 7445ULL
 #define XAPI_EXIT 60ULL
 #define XAPI_EXIT_GROUP 231ULL
 
@@ -77,12 +83,35 @@ typedef struct {
     uint64_t st_size;
 } Elf64_Sym;
 
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    char *title;
+    uint8_t sets;
+} NativeXWindow;
+
+typedef struct {
+    bool in_use;
+    uint64_t handle;
+    uint32_t width;
+    uint32_t height;
+    uint8_t sets;
+    const char *title;
+    uint64_t msg_proc;
+    bool dirty;
+    uint64_t draw_count;
+} NativeWindow;
+
+#define NATIVE_MAX_WINDOWS 64U
+
 static char g_native_error[256];
 static jmp_buf g_exit_jmp;
 static int g_exit_code;
 static bool g_debug_enabled;
 static uint64_t g_brk_addr;
 static uint64_t g_brk_map_end;
+static NativeWindow g_native_windows[NATIVE_MAX_WINDOWS];
+static uint64_t g_next_window_handle;
 
 static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
                                            uint64_t arg2, uint64_t arg3,
@@ -126,6 +155,109 @@ static bool read_at(FILE *file, uint64_t offset, void *dst, size_t size)
     return offset <= (uint64_t)LONG_MAX
         && fseek(file, (long)offset, SEEK_SET) == 0
         && fread(dst, 1, size, file) == size;
+}
+
+static NativeWindow *native_find_window(uint64_t handle)
+{
+    if (!handle)
+    {
+        return NULL;
+    }
+    for (size_t i = 0; i < NATIVE_MAX_WINDOWS; i++)
+    {
+        NativeWindow *window = &g_native_windows[i];
+        if (window->in_use && window->handle == handle)
+        {
+            return window;
+        }
+    }
+    return NULL;
+}
+
+static uint64_t native_create_window(uint64_t handle_ptr, uint64_t xwindow_ptr)
+{
+    if (!handle_ptr || !xwindow_ptr)
+    {
+        return 0;
+    }
+
+    NativeXWindow *window_info = (NativeXWindow *)(uintptr_t)xwindow_ptr;
+    uint64_t *out_handle = (uint64_t *)(uintptr_t)handle_ptr;
+
+    for (size_t i = 0; i < NATIVE_MAX_WINDOWS; i++)
+    {
+        NativeWindow *window = &g_native_windows[i];
+        if (window->in_use)
+        {
+            continue;
+        }
+
+        uint64_t handle = g_next_window_handle++;
+        if (handle == 0)
+        {
+            handle = g_next_window_handle++;
+        }
+        window->in_use = true;
+        window->handle = handle;
+        window->width = window_info->width;
+        window->height = window_info->height;
+        window->sets = window_info->sets;
+        window->title = window_info->title ? window_info->title : "";
+        *out_handle = handle;
+
+        if (g_debug_enabled)
+        {
+            fprintf(stderr, "[native] create window handle=%llu size=%ux%u title=%s\n",
+                    (unsigned long long)handle, window->width, window->height,
+                    window->title);
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
+static uint64_t native_set_msg_prcor(uint64_t handle, uint64_t msg_proc)
+{
+    NativeWindow *window = native_find_window(handle);
+    if (!window)
+    {
+        return 0;
+    }
+    window->msg_proc = msg_proc;
+    return 1;
+}
+
+static uint64_t native_draw_rect(uint64_t handle, uint64_t x1, uint64_t y1,
+                                 uint64_t x2, uint64_t y2, uint64_t color,
+                                 bool fill)
+{
+    (void)x1;
+    (void)y1;
+    (void)x2;
+    (void)y2;
+    (void)color;
+    (void)fill;
+
+    NativeWindow *window = native_find_window(handle);
+    if (!window)
+    {
+        return 0;
+    }
+    window->dirty = true;
+    window->draw_count++;
+    return 1;
+}
+
+static uint64_t native_refresh_window(uint64_t handle)
+{
+    NativeWindow *window = native_find_window(handle);
+    if (!window)
+    {
+        return 0;
+    }
+    window->dirty = false;
+    return 1;
 }
 
 static uint64_t find_symbol(FILE *file, const Elf64_Ehdr *eh, const char *name)
@@ -251,6 +383,27 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
         }
         return 0;
     }
+    if (syscall_no == XAPI_CREATE_WINDOW)
+    {
+        return native_create_window(arg1, arg2);
+    }
+    if (syscall_no == XAPI_SET_MSG_PRCOR)
+    {
+        return native_set_msg_prcor(arg1, arg2);
+    }
+    if (syscall_no == XAPI_DRAW_RECT || syscall_no == XAPI_DRAW_RECT_FILL)
+    {
+        return native_draw_rect(arg1, arg2, arg3, arg4, arg5, arg6,
+                                syscall_no == XAPI_DRAW_RECT_FILL);
+    }
+    if (syscall_no == XAPI_REFRESH_WINDOW)
+    {
+        return native_refresh_window(arg1);
+    }
+    if (syscall_no == XAPI_FLUSH_TIME)
+    {
+        return 0;
+    }
     if (syscall_no == XAPI_EXIT || syscall_no == XAPI_EXIT_GROUP)
     {
         g_exit_code = (int)arg1;
@@ -372,6 +525,8 @@ int xj380_native_run(const char *path, int argc, char **argv, bool debug_enabled
     g_debug_enabled = debug_enabled;
     g_brk_addr = 0;
     g_brk_map_end = 0;
+    memset(g_native_windows, 0, sizeof(g_native_windows));
+    g_next_window_handle = 1;
 
     FILE *file = fopen(path, "rb");
     if (!file)
