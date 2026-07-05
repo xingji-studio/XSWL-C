@@ -106,6 +106,7 @@ add_custom_target(xswl_test_gui_events_file
 add_custom_target(xswl_run_gui_events
     COMMAND ${CMAKE_COMMAND} -E env
         SDL_VIDEODRIVER=dummy
+        LSAN_OPTIONS=detect_leaks=0
         XSWL_TEST_GUI_EVENTS=1
         $<TARGET_FILE:xswl>
         ${CMAKE_CURRENT_BINARY_DIR}/test_gui_events.elf

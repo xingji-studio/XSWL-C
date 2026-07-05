@@ -16,13 +16,17 @@
 .equ MSG_LBUTTON,       2
 .equ MSG_ROLLER,        5
 .equ MSG_SPCHAR,        7
+.equ MSG_KEYUP,         9
+.equ MSG_KEYDOWN,       10
 
 .equ SEEN_CHAR,         1
 .equ SEEN_SPCHAR,       2
 .equ SEEN_MOVE,         4
 .equ SEEN_LBUTTON,      8
 .equ SEEN_ROLLER,       16
-.equ SEEN_ALL,          31
+.equ SEEN_KEYDOWN,      32
+.equ SEEN_KEYUP,        64
+.equ SEEN_ALL,          127
 
 .macro CALL_X no
     mov  rax, TRAMP + (\no) * 16
@@ -75,6 +79,10 @@ msg_proc:
     je   .lbutton
     cmp  rdi, MSG_ROLLER
     je   .roller
+    cmp  rdi, MSG_KEYDOWN
+    je   .keydown
+    cmp  rdi, MSG_KEYUP
+    je   .keyup
     ret
 .char:
     test rsi, rsi
@@ -108,6 +116,20 @@ msg_proc:
     cmp  rdx, 1
     jne  .done
     or   qword ptr [rip + seen_mask], SEEN_ROLLER
+    ret
+.keydown:
+    test rsi, rsi
+    jne  .done
+    cmp  rdx, 0x41
+    jne  .done
+    or   qword ptr [rip + seen_mask], SEEN_KEYDOWN
+    ret
+.keyup:
+    test rsi, rsi
+    jne  .done
+    cmp  rdx, 0x41
+    jne  .done
+    or   qword ptr [rip + seen_mask], SEEN_KEYUP
 .done:
     ret
 
