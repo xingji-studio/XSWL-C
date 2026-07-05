@@ -5,11 +5,20 @@
 .equ X_PRINTLINE,       7385
 .equ X_EXIT,            60
 .equ SYS_BRK,           12
+.equ X_OPEN_FILE,       7387
+.equ X_CLOSE_FILE,      7388
+.equ X_READ_FILE,       7423
 .equ X_CREATE_WINDOW,   7392
+.equ X_GET_WINDOW_SIZE, 7426
 .equ X_DRAW_RECT,       7398
 .equ X_DRAW_RECT_FILL,  7399
 .equ X_SET_MSG_PRCOR,   7405
+.equ X_READ_BUFFER,     7406
+.equ X_WRITE_BUFFER,    7407
+.equ X_WRITE_BUFFER_A,  7408
 .equ X_REFRESH_WINDOW,  7409
+.equ X_READ_BUFFER_A,   7417
+.equ X_SLEEP,           7430
 .equ X_FLUSH_TIME,      7445
 
     .text
@@ -36,6 +45,15 @@ _start:
     je   .fail
 
     mov  rdi, qword ptr [rip + native_window_handle]
+    lea  rsi, [rip + window_width]
+    lea  rdx, [rip + window_height]
+    call xapi_get_window_size
+    cmp  qword ptr [rip + window_width], 64
+    jne  .fail
+    cmp  qword ptr [rip + window_height], 48
+    jne  .fail
+
+    mov  rdi, qword ptr [rip + native_window_handle]
     lea  rsi, [rip + native_msg_proc]
     call xapi_set_msg_prcor
 
@@ -58,6 +76,54 @@ _start:
     mov  rdi, qword ptr [rip + native_window_handle]
     call xapi_refresh_window
     call xapi_flush_time
+
+    mov  byte ptr [rip + pixel_buffer], 0x7f
+    mov  rdi, qword ptr [rip + native_window_handle]
+    xor  esi, esi
+    xor  edx, edx
+    mov  ecx, 1
+    mov  r8d, 1
+    lea  r9, [rip + pixel_buffer]
+    call xapi_read_buffer
+    cmp  byte ptr [rip + pixel_buffer], 0
+    jne  .fail
+
+    lea  rdi, [rip + relative_fixture_path]
+    call xapi_open_file
+    test rax, rax
+    jne  .fail
+
+    lea  rdi, [rip + fixture_path]
+    call xapi_open_file
+    test rax, rax
+    je   .fail
+    mov  r13, rax
+    cmp  qword ptr [rax], 20
+    jne  .fail
+    mov  r14, qword ptr [rax + 8]
+    test r14, r14
+    je   .fail
+    cmp  byte ptr [r14], 'n'
+    jne  .fail
+    cmp  byte ptr [r14 + 12], 'f'
+    jne  .fail
+    mov  rdi, r13
+    call xapi_close_file
+
+    xor  edi, edi
+    call xapi_sleep
+
+    lea  rdi, [rip + fixture_path]
+    lea  rsi, [rip + read_buffer]
+    mov  edx, 6
+    xor  ecx, ecx
+    call xapi_read_file
+    cmp  rax, 6
+    jne  .fail
+    cmp  byte ptr [rip + read_buffer], 'n'
+    jne  .fail
+    cmp  byte ptr [rip + read_buffer + 5], 'e'
+    jne  .fail
 
     lea  rdi, [rip + pass_msg]
     call xapi_printline
@@ -95,11 +161,60 @@ xapi_printline:
     add  rsp, 8
     ret
 
+xapi_open_file:
+    mov  rsi, rdi
+    mov  rdi, X_OPEN_FILE
+    xor  edx, edx
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+xapi_close_file:
+    mov  rsi, rdi
+    mov  rdi, X_CLOSE_FILE
+    xor  edx, edx
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+xapi_read_file:
+    mov  r10, rcx
+    mov  rcx, rdx
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, X_READ_FILE
+    mov  r8, r10
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
 xapi_create_window:
     mov  rdx, rsi
     mov  rsi, rdi
     mov  rdi, X_CREATE_WINDOW
     xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+xapi_get_window_size:
+    mov  rcx, rdx
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, X_GET_WINDOW_SIZE
     xor  r8d, r8d
     xor  r9d, r9d
     push 0
@@ -155,9 +270,33 @@ xapi_refresh_window:
     add  rsp, 8
     ret
 
+xapi_read_buffer:
+    push r9
+    mov  r9, r8
+    mov  r8, rcx
+    mov  rcx, rdx
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, X_READ_BUFFER
+    call enter_syscall
+    add  rsp, 8
+    ret
+
 xapi_flush_time:
     mov  rdi, X_FLUSH_TIME
     xor  esi, esi
+    xor  edx, edx
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+xapi_sleep:
+    mov  rsi, rdi
+    mov  rdi, X_SLEEP
     xor  edx, edx
     xor  ecx, ecx
     xor  r8d, r8d
@@ -198,13 +337,28 @@ pass_msg:
     .asciz "[native-smoke] patched enter_syscall executed"
 native_window_title:
     .asciz "native smoke"
+fixture_path:
+    .asciz "/native_fixture.txt"
+relative_fixture_path:
+    .asciz "native_fixture.txt"
 
     .data
     .align 8
 native_window_handle:
+    .quad 0
+window_width:
+    .quad 0
+window_height:
     .quad 0
 native_window:
     .long 64
     .long 48
     .quad native_window_title
     .byte 0
+
+    .bss
+    .align 8
+read_buffer:
+    .skip 16
+pixel_buffer:
+    .skip 4

@@ -62,10 +62,13 @@ Experimental native fast path:
 ```
 
 Native mode maps static x86_64 XJ380 ELF programs into the host process and
-patches their `enter_syscall` symbol to call XSWL-C directly. It currently
-supports only a small smoke-test subset (`brk`, `Output`, `PrintLine`, `Exit`);
-unsupported XAPI calls fail fast with a diagnostic instead of falling back
-inside the same process. Use the default Unicorn path for compatibility.
+patches their `enter_syscall` symbol to call XSWL-C directly. It is still a
+compatibility subset, but now covers the native smoke path plus common GUI
+startup calls: `brk`, `Output`, `PrintLine`, `Exit`, `OpenFile`, `ReadFile`,
+`CloseFile`, `CreateWindow`, `GetWindowSize`, `SetMsgPrcor`, `DrawRect`,
+`ReadBuffer`, `WriteBuffer`, `RefreshWindow`, `FlushTime`, and `Sleep`.
+Unsupported XAPI calls fail fast with a diagnostic instead of falling back
+inside the same process. Use the default Unicorn path for full compatibility.
 
 ## Test
 
@@ -76,7 +79,8 @@ cmake --build build --target xswl_run_native_smoke
 
 The GUI event test uses SDL's dummy video driver, so it can run without a
 display server. The native smoke test verifies fixed-address ELF loading,
-`enter_syscall` patching, `brk`, `PrintLine`, and `Exit`.
+`enter_syscall` patching, `brk`, basic file access, minimal GUI/window calls,
+framebuffer no-op compatibility, `Sleep`, `PrintLine`, and `Exit`.
 
 ## Covered XAPI Areas
 

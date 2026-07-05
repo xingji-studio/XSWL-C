@@ -127,8 +127,19 @@ add_custom_command(
     VERBATIM
 )
 
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/native_fixture.txt
+    COMMAND ${CMAKE_COMMAND} -E copy
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_native_fixture.txt
+        ${CMAKE_CURRENT_BINARY_DIR}/native_fixture.txt
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_native_fixture.txt
+    VERBATIM
+)
+
 add_custom_target(xswl_test_native_smoke_file
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/test_native_smoke.elf
+    DEPENDS
+        ${CMAKE_CURRENT_BINARY_DIR}/test_native_smoke.elf
+        ${CMAKE_CURRENT_BINARY_DIR}/native_fixture.txt
 )
 
 add_custom_target(xswl_run_native_smoke
