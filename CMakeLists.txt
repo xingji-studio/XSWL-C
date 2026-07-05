@@ -67,6 +67,7 @@ add_executable(xswl
     src/main.c
     src/xj380_emu.c
     src/xj380_gui.c
+    src/xj380_native.c
 )
 
 xswl_apply_common_settings(xswl)
@@ -111,6 +112,31 @@ add_custom_target(xswl_run_gui_events
         $<TARGET_FILE:xswl>
         ${CMAKE_CURRENT_BINARY_DIR}/test_gui_events.elf
     DEPENDS xswl xswl_test_gui_events_file
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_native_smoke.elf
+    COMMAND ${CMAKE_C_COMPILER}
+        -m64 -nostdlib -static -no-pie
+        -Wl,-Ttext=0x200000
+        -o ${CMAKE_CURRENT_BINARY_DIR}/test_native_smoke.elf
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_native_smoke.S
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_native_smoke.S
+    VERBATIM
+)
+
+add_custom_target(xswl_test_native_smoke_file
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/test_native_smoke.elf
+)
+
+add_custom_target(xswl_run_native_smoke
+    COMMAND $<TARGET_FILE:xswl>
+        --native
+        nodebug
+        ${CMAKE_CURRENT_BINARY_DIR}/test_native_smoke.elf
+    DEPENDS xswl xswl_test_native_smoke_file
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     VERBATIM
 )

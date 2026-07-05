@@ -55,14 +55,28 @@ Use `nodebug` or `--nodebug` before the program path to suppress debug logs:
 ./build/xswl nodebug ./app.elf
 ```
 
+Experimental native fast path:
+
+```bash
+./build/xswl --native ./app.elf
+```
+
+Native mode maps static x86_64 XJ380 ELF programs into the host process and
+patches their `enter_syscall` symbol to call XSWL-C directly. It currently
+supports only a small smoke-test subset (`brk`, `Output`, `PrintLine`, `Exit`);
+unsupported XAPI calls fail fast with a diagnostic instead of falling back
+inside the same process. Use the default Unicorn path for compatibility.
+
 ## Test
 
 ```bash
 cmake --build build --target xswl_run_gui_events
+cmake --build build --target xswl_run_native_smoke
 ```
 
 The GUI event test uses SDL's dummy video driver, so it can run without a
-display server.
+display server. The native smoke test verifies fixed-address ELF loading,
+`enter_syscall` patching, `brk`, `PrintLine`, and `Exit`.
 
 ## Covered XAPI Areas
 
