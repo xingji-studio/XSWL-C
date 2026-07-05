@@ -15,6 +15,8 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -29,6 +31,7 @@
 #define SYS_SOCKET 41ULL
 #define SYS_FORK 57ULL
 #define SYS_EXECVE 59ULL
+#define SYS_WAIT4 61ULL
 #define SYS_KILL 62ULL
 #define SYS_BRK 12ULL
 #define SYS_ARCH_PRCTL 158ULL
@@ -211,6 +214,7 @@ static char g_native_app_dir[PATH_MAX];
 static jmp_buf g_exit_jmp;
 static int g_exit_code;
 static bool g_debug_enabled;
+static bool g_native_is_fork_child;
 static uint64_t g_brk_addr;
 static uint64_t g_brk_map_end;
 static uint64_t g_fs_base;
@@ -660,6 +664,74 @@ static NativeWindow *native_find_window(uint64_t handle)
     return NULL;
 }
 
+static bool native_has_windows(void)
+{
+    for (size_t i = 0; i < NATIVE_MAX_WINDOWS; i++)
+    {
+        if (g_native_windows[i].in_use)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint64_t native_fork_process(void)
+{
+    if (native_has_windows())
+    {
+        return (uint64_t)-1;
+    }
+
+    pid_t pid = (pid_t)syscall(SYS_fork);
+    if (pid < 0)
+    {
+        return (uint64_t)-1;
+    }
+    if (pid == 0)
+    {
+        g_native_is_fork_child = true;
+        if (g_debug_enabled)
+        {
+            static const char child_msg[] = "[native] fork child reached\n";
+            (void)write(2, child_msg, sizeof(child_msg) - 1U);
+        }
+        return 0;
+    }
+    if (g_debug_enabled)
+    {
+        fprintf(stderr, "[native] fork parent child=%d\n", (int)pid);
+    }
+    return (uint64_t)pid;
+}
+
+static uint64_t native_wait4_process(uint64_t pid_arg, uint64_t status_ptr,
+                                     uint64_t options)
+{
+    int status = 0;
+    int wait_options = 0;
+    if (options & 1ULL)
+    {
+        wait_options |= WNOHANG;
+    }
+
+    pid_t waited = waitpid((pid_t)(int64_t)pid_arg, &status, wait_options);
+    if (g_debug_enabled)
+    {
+        fprintf(stderr, "[native] wait4 pid=%lld options=0x%x -> %d status=0x%x\n",
+                (long long)(int64_t)pid_arg, wait_options, (int)waited, status);
+    }
+    if (waited < 0)
+    {
+        return (uint64_t)-1;
+    }
+    if (status_ptr && waited > 0)
+    {
+        *(int *)(uintptr_t)status_ptr = status;
+    }
+    return (uint64_t)waited;
+}
+
 static uint64_t native_create_window(uint64_t handle_ptr, uint64_t xwindow_ptr)
 {
     if (!handle_ptr || !xwindow_ptr)
@@ -985,12 +1057,19 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     {
         return 0;
     }
+    if (syscall_no == SYS_FORK)
+    {
+        return native_fork_process();
+    }
+    if (syscall_no == SYS_WAIT4)
+    {
+        return native_wait4_process(arg1, arg2, arg3);
+    }
     if (syscall_no == SYS_GETPID)
     {
-        return 1;
+        return g_native_is_fork_child ? (uint64_t)getpid() : 1;
     }
-    if (syscall_no == SYS_SOCKET || syscall_no == SYS_FORK || syscall_no == SYS_EXECVE
-        || syscall_no == SYS_KILL)
+    if (syscall_no == SYS_SOCKET || syscall_no == SYS_EXECVE || syscall_no == SYS_KILL)
     {
         return (uint64_t)-1;
     }
@@ -1098,7 +1177,11 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     {
         return native_close_file(arg1);
     }
-    if (syscall_no == XAPI_FORK || syscall_no == XAPI_EXECVE)
+    if (syscall_no == XAPI_FORK)
+    {
+        return native_fork_process();
+    }
+    if (syscall_no == XAPI_EXECVE)
     {
         return (uint64_t)-1;
     }
@@ -1258,6 +1341,10 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     }
     if (syscall_no == XAPI_EXIT || syscall_no == XAPI_EXIT_GROUP)
     {
+        if (g_native_is_fork_child)
+        {
+            _exit((int)arg1);
+        }
         g_exit_code = (int)arg1;
         longjmp(g_exit_jmp, 1);
     }
@@ -1375,6 +1462,7 @@ int xj380_native_run(const char *path, int argc, char **argv, bool debug_enabled
     g_native_error[0] = '\0';
     g_exit_code = 0;
     g_debug_enabled = debug_enabled;
+    g_native_is_fork_child = false;
     native_set_app_dir(path);
     g_brk_addr = 0;
     g_brk_map_end = 0;

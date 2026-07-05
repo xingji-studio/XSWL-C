@@ -10,6 +10,7 @@
 .equ SYS_CLOSE,         3
 .equ SYS_STAT,          4
 .equ SYS_BRK,           12
+.equ SYS_FORK,          57
 .equ SYS_ARCH_PRCTL,    158
 .equ ARCH_SET_FS,       0x1002
 .equ ARCH_GET_FS,       0x1003
@@ -59,6 +60,10 @@ _start:
     call xapi_create_window
     cmp  qword ptr [rip + native_window_handle], 0
     je   .fail
+
+    call sys_fork
+    cmp  rax, -1
+    jne  .fail
 
     mov  rdi, qword ptr [rip + native_window_handle]
     lea  rsi, [rip + window_width]
@@ -371,6 +376,18 @@ sys_write_file:
     mov  rdx, rsi
     mov  rsi, rdi
     mov  rdi, SYS_WRITE
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+sys_fork:
+    mov  rdi, SYS_FORK
+    xor  esi, esi
+    xor  edx, edx
+    xor  ecx, ecx
     xor  r8d, r8d
     xor  r9d, r9d
     push 0

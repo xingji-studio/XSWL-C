@@ -70,6 +70,11 @@ startup calls: `brk`, `Output`, `PrintLine`, `Exit`, `OpenFile`, `ReadFile`,
 `ReadBuffer`, `WriteBuffer`, `RefreshWindow`, `FlushTime`, `Sleep`, and common
 system queries. Process creation and private XJ380 kernel service calls are not
 emulated; they fail conservatively.
+
+Native `fork` is supported for non-GUI programs. `SYS_FORK` and `XAPI_FORK`
+return a child PID in the parent and `0` in the child; `SYS_WAIT4` can reap
+children and reports normal exit status. If a native program has created a
+window, `fork` returns failure to avoid duplicating GUI/window state.
 Unsupported XAPI calls fail fast with a diagnostic instead of falling back
 inside the same process. Use the default Unicorn path for full compatibility.
 
@@ -78,12 +83,15 @@ inside the same process. Use the default Unicorn path for full compatibility.
 ```bash
 cmake --build build --target xswl_run_gui_events
 cmake --build build --target xswl_run_native_smoke
+cmake --build build --target xswl_run_native_fork
 ```
 
 The GUI event test uses SDL's dummy video driver, so it can run without a
 display server. The native smoke test verifies fixed-address ELF loading,
 `enter_syscall` patching, `brk`, basic file access, minimal GUI/window calls,
 framebuffer no-op compatibility, `Sleep`, `PrintLine`, and `Exit`.
+The native fork test verifies `SYS_FORK`, `XAPI_FORK`, `SYS_WAIT4`, child exit
+status, and the non-GUI fork path.
 
 ## Covered XAPI Areas
 

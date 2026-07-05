@@ -151,3 +151,28 @@ add_custom_target(xswl_run_native_smoke
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     VERBATIM
 )
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_native_fork.elf
+    COMMAND ${CMAKE_C_COMPILER}
+        -m64 -nostdlib -static -no-pie
+        -Wl,-Ttext=0x200000
+        -o ${CMAKE_CURRENT_BINARY_DIR}/test_native_fork.elf
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_native_fork.S
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_native_fork.S
+    VERBATIM
+)
+
+add_custom_target(xswl_test_native_fork_file
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/test_native_fork.elf
+)
+
+add_custom_target(xswl_run_native_fork
+    COMMAND $<TARGET_FILE:xswl>
+        --native
+        nodebug
+        ${CMAKE_CURRENT_BINARY_DIR}/test_native_fork.elf
+    DEPENDS xswl xswl_test_native_fork_file
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    VERBATIM
+)
