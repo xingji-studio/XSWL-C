@@ -11,17 +11,64 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
+#define SYS_READ 0ULL
+#define SYS_WRITE 1ULL
+#define SYS_OPEN 2ULL
+#define SYS_CLOSE 3ULL
+#define SYS_STAT 4ULL
+#define SYS_RT_SIGACTION 13ULL
+#define SYS_RT_SIGPROCMASK 14ULL
+#define SYS_GETPID 39ULL
+#define SYS_SOCKET 41ULL
+#define SYS_FORK 57ULL
+#define SYS_EXECVE 59ULL
+#define SYS_KILL 62ULL
 #define SYS_BRK 12ULL
+#define SYS_ARCH_PRCTL 158ULL
+#define SYS_GETUID 102ULL
+#define SYS_GETGID 104ULL
+#define SYS_GETEUID 107ULL
+#define SYS_GETEGID 108ULL
+#define SYS_GETGROUPS 115ULL
+#define SYS_CLOCK_GETTIME 228ULL
+#define ARCH_SET_FS 0x1002ULL
+#define ARCH_GET_FS 0x1003ULL
+
 #define XAPI_PRINTLINE 7385ULL
 #define XAPI_OUTPUT 7381ULL
+#define XAPI_PRINTF 7386ULL
 #define XAPI_OPEN_FILE 7387ULL
 #define XAPI_CLOSE_FILE 7388ULL
+#define XAPI_FORK 7389ULL
+#define XAPI_EXECVE 7390ULL
+#define XAPI_MAKEDIR 7425ULL
+#define XAPI_SEARCH_FILE 7416ULL
 #define XAPI_READ_FILE 7423ULL
+#define XAPI_GET_VERSION 7391ULL
 #define XAPI_CREATE_WINDOW 7392ULL
+#define XAPI_SET_WINDOW_TITLE 7393ULL
+#define XAPI_SET_ICON 7395ULL
+#define XAPI_DRAW_POINT 7396ULL
+#define XAPI_DRAW_LINE 7397ULL
+#define XAPI_DRAW_TEXT 7402ULL
+#define XAPI_DRAW_PNG 7404ULL
+#define XAPI_BUTTON 7410ULL
+#define XAPI_BUTTON_EMP 7411ULL
+#define XAPI_DRAW_TEXT_SW 7415ULL
+#define XAPI_DRAW_PICTURE 7419ULL
+#define XAPI_GET_CURRENT_USER 7413ULL
 #define XAPI_GET_WINDOW_SIZE 7426ULL
+#define XAPI_CALC_TEXT_WIDTH 7431ULL
+#define XAPI_DELETE_BUTTON 7432ULL
+#define XAPI_GET_TIME_X 7433ULL
+#define XAPI_GET_MEMORY_SIZE 7435ULL
 #define XAPI_DRAW_RECT 7398ULL
 #define XAPI_DRAW_RECT_FILL 7399ULL
 #define XAPI_SET_MSG_PRCOR 7405ULL
@@ -31,7 +78,19 @@
 #define XAPI_REFRESH_WINDOW 7409ULL
 #define XAPI_READ_BUFFER_A 7417ULL
 #define XAPI_SLEEP 7430ULL
+#define XAPI_GET_PIC_SIZE 7440ULL
+#define XAPI_REFRESH_PART_WINDOW 7438ULL
+#define XAPI_REG_RB_MENU 7436ULL
+#define XAPI_URG_RB_MENU 7437ULL
+#define XAPI_GET_TASK_LIST 7448ULL
 #define XAPI_FLUSH_TIME 7445ULL
+#define XAPI_DRAW_FA 7447ULL
+#define XAPI_OUTPUT_SERIAL 7427ULL
+#define XAPI_USER_OOBE_REQUIRED 7452ULL
+#define XAPI_USER_LIST 7453ULL
+#define XAPI_PUT_TEXT_INBOX 7456ULL
+#define XAPI_GET_TEXT_INBOX 7457ULL
+#define XAPI_DEL_TEXT_INBOX 7458ULL
 #define XAPI_EXIT 60ULL
 #define XAPI_EXIT_GROUP 231ULL
 
@@ -116,7 +175,36 @@ typedef struct {
     void *buffer;
 } NativeXFile;
 
+typedef struct {
+    bool in_use;
+    FILE *file;
+} NativeFd;
+
+typedef struct {
+    char filename[256];
+    uint64_t length;
+    uint64_t filetype;
+} NativeDirNode;
+
+typedef struct {
+    char name[64];
+    uint32_t user_type;
+} NativeUserInfo;
+
+typedef struct {
+    int32_t tm_sec;
+    int32_t tm_min;
+    int32_t tm_hour;
+    int32_t tm_mday;
+    int32_t tm_mon;
+    int32_t tm_year;
+    int32_t tm_wday;
+    int32_t tm_yday;
+    int32_t tm_isdst;
+} NativeTimeType;
+
 #define NATIVE_MAX_WINDOWS 64U
+#define NATIVE_MAX_FDS 64U
 
 static char g_native_error[256];
 static char g_native_app_dir[PATH_MAX];
@@ -125,8 +213,10 @@ static int g_exit_code;
 static bool g_debug_enabled;
 static uint64_t g_brk_addr;
 static uint64_t g_brk_map_end;
+static uint64_t g_fs_base;
 static NativeWindow g_native_windows[NATIVE_MAX_WINDOWS];
 static uint64_t g_next_window_handle;
+static NativeFd g_native_fds[NATIVE_MAX_FDS];
 
 static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
                                            uint64_t arg2, uint64_t arg3,
@@ -232,7 +322,11 @@ static int native_try_system_font(char *host_path, size_t host_path_size,
     {
         return 0;
     }
-    return native_try_host_path(host_path, host_path_size, "../XJ380", remapped);
+    if (native_try_host_path(host_path, host_path_size, "../XJ380", remapped) == 0)
+    {
+        return 0;
+    }
+    return native_try_host_path(host_path, host_path_size, "../../XJ380", remapped);
 }
 
 static int native_resolve_host_path(const char *vpath, char *host_path,
@@ -252,6 +346,7 @@ static int native_resolve_host_path(const char *vpath, char *host_path,
     if (native_try_host_path(host_path, host_path_size, ".", rel_path) == 0
         || native_try_host_path(host_path, host_path_size, g_native_app_dir, rel_path) == 0
         || native_try_host_path(host_path, host_path_size, "../XJ380", rel_path) == 0
+        || native_try_host_path(host_path, host_path_size, "../../XJ380", rel_path) == 0
         || native_try_system_font(host_path, host_path_size, rel_path) == 0)
     {
         return 0;
@@ -383,6 +478,171 @@ static uint64_t native_read_file(uint64_t path_ptr, uint64_t buffer_ptr,
     return (uint64_t)bytes_read;
 }
 
+static uint64_t native_search_file(uint64_t path_ptr, uint64_t count_ptr,
+                                   uint64_t dir_ptr)
+{
+    if (!path_ptr || !count_ptr)
+    {
+        return 0;
+    }
+
+    const char *vpath = (const char *)(uintptr_t)path_ptr;
+    char host_path[PATH_MAX];
+    uint32_t count = 0;
+    *(uint32_t *)(uintptr_t)count_ptr = 0;
+    if (native_resolve_host_path(vpath, host_path, sizeof(host_path)) != 0)
+    {
+        return 0;
+    }
+
+    DIR *dir = opendir(host_path);
+    if (!dir)
+    {
+        return 0;
+    }
+
+    NativeDirNode *out = dir_ptr ? (NativeDirNode *)(uintptr_t)dir_ptr : NULL;
+    struct dirent *entry = NULL;
+    while ((entry = readdir(dir)) != NULL && count < 255U)
+    {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+        {
+            continue;
+        }
+
+        if (out)
+        {
+            NativeDirNode *node = &out[count];
+            memset(node, 0, sizeof(*node));
+            snprintf(node->filename, sizeof(node->filename), "%s", entry->d_name);
+
+            char child_path[PATH_MAX];
+            int written = snprintf(child_path, sizeof(child_path), "%s/%s", host_path,
+                                   entry->d_name);
+            if (written >= 0 && (size_t)written < sizeof(child_path))
+            {
+                struct stat st;
+                if (stat(child_path, &st) == 0)
+                {
+                    node->length = S_ISREG(st.st_mode) ? (uint64_t)st.st_size : 0;
+                    node->filetype = S_ISDIR(st.st_mode) ? 1ULL : 0ULL;
+                }
+            }
+        }
+        count++;
+    }
+    closedir(dir);
+    *(uint32_t *)(uintptr_t)count_ptr = count;
+    return count;
+}
+
+static int native_alloc_fd(FILE *file)
+{
+    for (size_t i = 0; i < NATIVE_MAX_FDS; i++)
+    {
+        if (!g_native_fds[i].in_use)
+        {
+            g_native_fds[i].in_use = true;
+            g_native_fds[i].file = file;
+            return (int)i + 3;
+        }
+    }
+    return -1;
+}
+
+static NativeFd *native_get_fd(uint64_t fd)
+{
+    if (fd < 3 || fd - 3 >= NATIVE_MAX_FDS)
+    {
+        return NULL;
+    }
+
+    NativeFd *native_fd = &g_native_fds[fd - 3];
+    return native_fd->in_use ? native_fd : NULL;
+}
+
+static uint64_t native_sys_open(uint64_t path_ptr)
+{
+    if (!path_ptr)
+    {
+        return (uint64_t)-1;
+    }
+
+    const char *vpath = (const char *)(uintptr_t)path_ptr;
+    char host_path[PATH_MAX];
+    if (native_resolve_host_path(vpath, host_path, sizeof(host_path)) != 0)
+    {
+        return (uint64_t)-1;
+    }
+
+    FILE *file = fopen(host_path, "rb");
+    if (!file)
+    {
+        return (uint64_t)-1;
+    }
+
+    int fd = native_alloc_fd(file);
+    if (fd < 0)
+    {
+        fclose(file);
+        return (uint64_t)-1;
+    }
+    return (uint64_t)fd;
+}
+
+static uint64_t native_sys_read(uint64_t fd, uint64_t buffer_ptr, uint64_t size)
+{
+    if (!buffer_ptr || size > (uint64_t)SIZE_MAX)
+    {
+        return (uint64_t)-1;
+    }
+
+    NativeFd *native_fd = native_get_fd(fd);
+    if (!native_fd)
+    {
+        return (uint64_t)-1;
+    }
+    return (uint64_t)fread((void *)(uintptr_t)buffer_ptr, 1, (size_t)size,
+                           native_fd->file);
+}
+
+static uint64_t native_sys_close(uint64_t fd)
+{
+    NativeFd *native_fd = native_get_fd(fd);
+    if (!native_fd)
+    {
+        return (uint64_t)-1;
+    }
+
+    fclose(native_fd->file);
+    native_fd->file = NULL;
+    native_fd->in_use = false;
+    return 0;
+}
+
+static uint64_t native_sys_stat(uint64_t path_ptr, uint64_t stat_ptr)
+{
+    if (!path_ptr || !stat_ptr)
+    {
+        return (uint64_t)-1;
+    }
+
+    const char *vpath = (const char *)(uintptr_t)path_ptr;
+    char host_path[PATH_MAX];
+    if (native_resolve_host_path(vpath, host_path, sizeof(host_path)) != 0)
+    {
+        return (uint64_t)-1;
+    }
+
+    struct stat st;
+    if (stat(host_path, &st) != 0)
+    {
+        return (uint64_t)-1;
+    }
+    memcpy((void *)(uintptr_t)stat_ptr, &st, sizeof(st));
+    return 0;
+}
+
 static NativeWindow *native_find_window(uint64_t handle)
 {
     if (!handle)
@@ -473,6 +733,17 @@ static uint64_t native_get_window_size(uint64_t handle, uint64_t width_ptr,
     return 1;
 }
 
+static uint64_t native_set_window_title(uint64_t handle, uint64_t title_ptr)
+{
+    NativeWindow *window = native_find_window(handle);
+    if (!window)
+    {
+        return 0;
+    }
+    window->title = title_ptr ? (const char *)(uintptr_t)title_ptr : "";
+    return 1;
+}
+
 static uint64_t native_draw_rect(uint64_t handle, uint64_t x1, uint64_t y1,
                                  uint64_t x2, uint64_t y2, uint64_t color,
                                  bool fill)
@@ -491,6 +762,89 @@ static uint64_t native_draw_rect(uint64_t handle, uint64_t x1, uint64_t y1,
     }
     window->dirty = true;
     window->draw_count++;
+    return 1;
+}
+
+static uint64_t native_draw_noop(uint64_t handle)
+{
+    NativeWindow *window = native_find_window(handle);
+    if (!window)
+    {
+        return 0;
+    }
+    window->dirty = true;
+    window->draw_count++;
+    return 1;
+}
+
+static uint64_t native_calc_text_width(uint64_t text_ptr, uint64_t size)
+{
+    if (!text_ptr)
+    {
+        return 0;
+    }
+
+    const char *text = (const char *)(uintptr_t)text_ptr;
+    uint64_t glyph_width = size > 0 ? size / 2U : 8U;
+    if (glyph_width == 0)
+    {
+        glyph_width = 1;
+    }
+    return (uint64_t)strlen(text) * glyph_width;
+}
+
+static uint64_t native_get_current_user(uint64_t user_info_ptr)
+{
+    if (!user_info_ptr)
+    {
+        return 0;
+    }
+
+    NativeUserInfo *info = (NativeUserInfo *)(uintptr_t)user_info_ptr;
+    memset(info, 0, sizeof(*info));
+    snprintf(info->name, sizeof(info->name), "%s", "Root");
+    info->user_type = 0;
+    return 1;
+}
+
+static uint64_t native_get_pic_size(uint64_t width_ptr, uint64_t height_ptr)
+{
+    if (width_ptr)
+    {
+        *(uint32_t *)(uintptr_t)width_ptr = 0;
+    }
+    if (height_ptr)
+    {
+        *(uint32_t *)(uintptr_t)height_ptr = 0;
+    }
+    return 0;
+}
+
+static uint64_t native_get_time_x(uint64_t time_ptr)
+{
+    if (!time_ptr)
+    {
+        return 0;
+    }
+
+    time_t now = time(NULL);
+    struct tm tm_value;
+    memset(&tm_value, 0, sizeof(tm_value));
+    if (!localtime_r(&now, &tm_value))
+    {
+        return 0;
+    }
+
+    NativeTimeType *out = (NativeTimeType *)(uintptr_t)time_ptr;
+    out->tm_sec = tm_value.tm_sec;
+    out->tm_min = tm_value.tm_min;
+    out->tm_hour = tm_value.tm_hour;
+    out->tm_mday = tm_value.tm_mday;
+    out->tm_mon = tm_value.tm_mon;
+    out->tm_year = tm_value.tm_year;
+    out->tm_wday = tm_value.tm_wday;
+    out->tm_yday = tm_value.tm_yday;
+    out->tm_isdst = tm_value.tm_isdst;
     return 1;
 }
 
@@ -602,12 +956,53 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
                                            uint64_t arg4, uint64_t arg5,
                                            uint64_t arg6)
 {
-    (void)arg2;
-    (void)arg3;
-    (void)arg4;
-    (void)arg5;
-    (void)arg6;
-
+    if (syscall_no == SYS_READ)
+    {
+        return native_sys_read(arg1, arg2, arg3);
+    }
+    if (syscall_no == SYS_WRITE)
+    {
+        if ((arg1 == 1 || arg1 == 2) && arg2 && arg3 <= (uint64_t)SIZE_MAX)
+        {
+            FILE *out = arg1 == 2 ? stderr : stdout;
+            return (uint64_t)fwrite((const void *)(uintptr_t)arg2, 1, (size_t)arg3, out);
+        }
+        return (uint64_t)-1;
+    }
+    if (syscall_no == SYS_OPEN)
+    {
+        return native_sys_open(arg1);
+    }
+    if (syscall_no == SYS_CLOSE)
+    {
+        return native_sys_close(arg1);
+    }
+    if (syscall_no == SYS_STAT)
+    {
+        return native_sys_stat(arg1, arg2);
+    }
+    if (syscall_no == SYS_RT_SIGACTION || syscall_no == SYS_RT_SIGPROCMASK)
+    {
+        return 0;
+    }
+    if (syscall_no == SYS_GETPID)
+    {
+        return 1;
+    }
+    if (syscall_no == SYS_SOCKET || syscall_no == SYS_FORK || syscall_no == SYS_EXECVE
+        || syscall_no == SYS_KILL)
+    {
+        return (uint64_t)-1;
+    }
+    if (syscall_no == SYS_GETUID || syscall_no == SYS_GETGID
+        || syscall_no == SYS_GETEUID || syscall_no == SYS_GETEGID)
+    {
+        return 0;
+    }
+    if (syscall_no == SYS_GETGROUPS)
+    {
+        return 0;
+    }
     if (syscall_no == SYS_BRK)
     {
         long page_size_long = sysconf(_SC_PAGESIZE);
@@ -636,12 +1031,45 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
         }
         return g_brk_addr;
     }
+    if (syscall_no == SYS_ARCH_PRCTL)
+    {
+        if (arg1 == ARCH_SET_FS)
+        {
+            g_fs_base = arg2;
+            return 0;
+        }
+        if (arg1 == ARCH_GET_FS && arg2)
+        {
+            *(uint64_t *)(uintptr_t)arg2 = g_fs_base;
+            return 0;
+        }
+        return (uint64_t)-1;
+    }
+    if (syscall_no == SYS_CLOCK_GETTIME)
+    {
+        if (!arg2)
+        {
+            return (uint64_t)-1;
+        }
+        return clock_gettime((clockid_t)arg1, (struct timespec *)(uintptr_t)arg2) == 0
+            ? 0
+            : (uint64_t)-1;
+    }
 
     if (syscall_no == XAPI_PRINTLINE)
     {
         if (arg1)
         {
             puts((const char *)(uintptr_t)arg1);
+        }
+        return 0;
+    }
+    if (syscall_no == XAPI_PRINTF)
+    {
+        if (arg1)
+        {
+            fputs((const char *)(uintptr_t)arg1, stdout);
+            fflush(stdout);
         }
         return 0;
     }
@@ -654,6 +1082,14 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
         }
         return 0;
     }
+    if (syscall_no == XAPI_OUTPUT_SERIAL)
+    {
+        if (arg1)
+        {
+            fprintf(stderr, "[serial] %s\n", (const char *)(uintptr_t)arg1);
+        }
+        return 0;
+    }
     if (syscall_no == XAPI_OPEN_FILE)
     {
         return native_open_file(arg1);
@@ -662,13 +1098,41 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     {
         return native_close_file(arg1);
     }
+    if (syscall_no == XAPI_FORK || syscall_no == XAPI_EXECVE)
+    {
+        return (uint64_t)-1;
+    }
     if (syscall_no == XAPI_READ_FILE)
     {
         return native_read_file(arg1, arg2, arg3, arg4);
     }
+    if (syscall_no == XAPI_SEARCH_FILE)
+    {
+        return native_search_file(arg1, arg2, arg3);
+    }
+    if (syscall_no == XAPI_GET_VERSION)
+    {
+        if (arg1)
+        {
+            snprintf((char *)(uintptr_t)arg1, 64, "%s", "XJ380 native");
+        }
+        return 0;
+    }
+    if (syscall_no == XAPI_MAKEDIR)
+    {
+        return 0;
+    }
     if (syscall_no == XAPI_CREATE_WINDOW)
     {
         return native_create_window(arg1, arg2);
+    }
+    if (syscall_no == XAPI_SET_WINDOW_TITLE)
+    {
+        return native_set_window_title(arg1, arg2);
+    }
+    if (syscall_no == XAPI_SET_ICON)
+    {
+        return native_find_window(arg1) ? 1 : 0;
     }
     if (syscall_no == XAPI_SET_MSG_PRCOR)
     {
@@ -678,10 +1142,60 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     {
         return native_get_window_size(arg1, arg2, arg3);
     }
+    if (syscall_no == XAPI_GET_CURRENT_USER)
+    {
+        return native_get_current_user(arg1);
+    }
+    if (syscall_no == XAPI_USER_LIST)
+    {
+        if (arg1 && arg2 > 0)
+        {
+            native_get_current_user(arg1);
+            return 1;
+        }
+        return 0;
+    }
+    if (syscall_no == XAPI_GET_TASK_LIST)
+    {
+        return 0;
+    }
+    if (syscall_no == XAPI_GET_MEMORY_SIZE)
+    {
+        return 512ULL * 1024ULL * 1024ULL;
+    }
+    if (syscall_no == XAPI_GET_TIME_X)
+    {
+        return native_get_time_x(arg1);
+    }
+    if (syscall_no == XAPI_DRAW_POINT)
+    {
+        return native_draw_rect(arg1, arg2, arg3, arg2, arg3, arg4, true);
+    }
+    if (syscall_no == XAPI_DRAW_LINE)
+    {
+        return native_draw_noop(arg1);
+    }
+    if (syscall_no == XAPI_DRAW_TEXT || syscall_no == XAPI_DRAW_TEXT_SW)
+    {
+        return native_draw_noop(arg1);
+    }
+    if (syscall_no == XAPI_CALC_TEXT_WIDTH)
+    {
+        return native_calc_text_width(arg1, arg2);
+    }
     if (syscall_no == XAPI_DRAW_RECT || syscall_no == XAPI_DRAW_RECT_FILL)
     {
         return native_draw_rect(arg1, arg2, arg3, arg4, arg5, arg6,
                                 syscall_no == XAPI_DRAW_RECT_FILL);
+    }
+    if (syscall_no == XAPI_DRAW_PNG || syscall_no == XAPI_DRAW_PICTURE
+        || syscall_no == XAPI_DRAW_FA)
+    {
+        return native_draw_noop(arg1);
+    }
+    if (syscall_no == XAPI_GET_PIC_SIZE)
+    {
+        return native_get_pic_size(arg1, arg2);
     }
     if (syscall_no == XAPI_READ_BUFFER)
     {
@@ -695,7 +1209,32 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     {
         return native_write_buffer(arg1);
     }
+    if (syscall_no == XAPI_BUTTON || syscall_no == XAPI_BUTTON_EMP
+        || syscall_no == XAPI_DELETE_BUTTON)
+    {
+        return native_find_window(arg1) ? 1 : 0;
+    }
+    if (syscall_no == XAPI_REG_RB_MENU || syscall_no == XAPI_URG_RB_MENU)
+    {
+        return native_find_window(arg1) ? 1 : 0;
+    }
+    if (syscall_no == XAPI_PUT_TEXT_INBOX || syscall_no == XAPI_DEL_TEXT_INBOX)
+    {
+        return native_find_window(arg1) ? 1 : 0;
+    }
+    if (syscall_no == XAPI_GET_TEXT_INBOX)
+    {
+        if (arg3 && arg4 > 0)
+        {
+            ((char *)(uintptr_t)arg3)[0] = '\0';
+        }
+        return native_find_window(arg1) ? 1 : 0;
+    }
     if (syscall_no == XAPI_REFRESH_WINDOW)
+    {
+        return native_refresh_window(arg1);
+    }
+    if (syscall_no == XAPI_REFRESH_PART_WINDOW)
     {
         return native_refresh_window(arg1);
     }
@@ -711,6 +1250,10 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
             usec = 1000000ULL;
         }
         usleep((useconds_t)usec);
+        return 0;
+    }
+    if (syscall_no == XAPI_USER_OOBE_REQUIRED)
+    {
         return 0;
     }
     if (syscall_no == XAPI_EXIT || syscall_no == XAPI_EXIT_GROUP)
@@ -837,6 +1380,8 @@ int xj380_native_run(const char *path, int argc, char **argv, bool debug_enabled
     g_brk_map_end = 0;
     memset(g_native_windows, 0, sizeof(g_native_windows));
     g_next_window_handle = 1;
+    memset(g_native_fds, 0, sizeof(g_native_fds));
+    g_fs_base = 0;
 
     FILE *file = fopen(path, "rb");
     if (!file)

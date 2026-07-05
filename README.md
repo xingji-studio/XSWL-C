@@ -65,8 +65,11 @@ Native mode maps static x86_64 XJ380 ELF programs into the host process and
 patches their `enter_syscall` symbol to call XSWL-C directly. It is still a
 compatibility subset, but now covers the native smoke path plus common GUI
 startup calls: `brk`, `Output`, `PrintLine`, `Exit`, `OpenFile`, `ReadFile`,
-`CloseFile`, `CreateWindow`, `GetWindowSize`, `SetMsgPrcor`, `DrawRect`,
-`ReadBuffer`, `WriteBuffer`, `RefreshWindow`, `FlushTime`, and `Sleep`.
+`CloseFile`, `SearchFile`, selected POSIX read-only file calls, `CreateWindow`,
+`GetWindowSize`, `SetMsgPrcor`, `SetWindowTitle`, basic text/drawing no-ops,
+`ReadBuffer`, `WriteBuffer`, `RefreshWindow`, `FlushTime`, `Sleep`, and common
+system queries. Process creation and private XJ380 kernel service calls are not
+emulated; they fail conservatively.
 Unsupported XAPI calls fail fast with a diagnostic instead of falling back
 inside the same process. Use the default Unicorn path for full compatibility.
 

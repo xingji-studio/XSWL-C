@@ -4,11 +4,22 @@
 
 .equ X_PRINTLINE,       7385
 .equ X_EXIT,            60
+.equ SYS_READ,          0
+.equ SYS_WRITE,         1
+.equ SYS_OPEN,          2
+.equ SYS_CLOSE,         3
+.equ SYS_STAT,          4
 .equ SYS_BRK,           12
+.equ SYS_ARCH_PRCTL,    158
+.equ ARCH_SET_FS,       0x1002
+.equ ARCH_GET_FS,       0x1003
 .equ X_OPEN_FILE,       7387
 .equ X_CLOSE_FILE,      7388
+.equ X_SEARCH_FILE,     7416
 .equ X_READ_FILE,       7423
 .equ X_CREATE_WINDOW,   7392
+.equ X_SET_ICON,        7395
+.equ X_DRAW_POINT,      7396
 .equ X_GET_WINDOW_SIZE, 7426
 .equ X_DRAW_RECT,       7398
 .equ X_DRAW_RECT_FILL,  7399
@@ -18,8 +29,13 @@
 .equ X_WRITE_BUFFER_A,  7408
 .equ X_REFRESH_WINDOW,  7409
 .equ X_READ_BUFFER_A,   7417
+.equ X_DRAW_PICTURE,    7419
+.equ X_GET_CURRENT_USER,7413
 .equ X_SLEEP,           7430
+.equ X_GET_PIC_SIZE,    7440
 .equ X_FLUSH_TIME,      7445
+.equ X_OUTPUT_SERIAL,   7427
+.equ X_USER_OOBE_REQUIRED, 7452
 
     .text
     .globl _start
@@ -58,6 +74,18 @@ _start:
     call xapi_set_msg_prcor
 
     mov  rdi, qword ptr [rip + native_window_handle]
+    lea  rsi, [rip + icon_path]
+    call xapi_set_icon
+    test rax, rax
+    je   .fail
+
+    mov  rdi, qword ptr [rip + native_window_handle]
+    mov  esi, 2
+    mov  edx, 3
+    mov  ecx, 0xffffffff
+    call xapi_draw_point
+
+    mov  rdi, qword ptr [rip + native_window_handle]
     xor  esi, esi
     xor  edx, edx
     mov  ecx, 15
@@ -76,6 +104,27 @@ _start:
     mov  rdi, qword ptr [rip + native_window_handle]
     call xapi_refresh_window
     call xapi_flush_time
+
+    lea  rdi, [rip + serial_msg]
+    call xapi_output_serial
+
+    lea  rdi, [rip + current_user]
+    call xapi_get_current_user
+    cmp  byte ptr [rip + current_user], 'R'
+    jne  .fail
+
+    call xapi_user_oobe_required
+    test rax, rax
+    jne  .fail
+
+    lea  rdi, [rip + picture_width]
+    lea  rsi, [rip + picture_height]
+    lea  rdx, [rip + icon_path]
+    call xapi_get_pic_size
+    cmp  dword ptr [rip + picture_width], 0
+    jne  .fail
+    cmp  dword ptr [rip + picture_height], 0
+    jne  .fail
 
     mov  byte ptr [rip + pixel_buffer], 0x7f
     mov  rdi, qword ptr [rip + native_window_handle]
@@ -123,6 +172,53 @@ _start:
     cmp  byte ptr [rip + read_buffer], 'n'
     jne  .fail
     cmp  byte ptr [rip + read_buffer + 5], 'e'
+    jne  .fail
+
+    lea  rdi, [rip + font_dir_path]
+    lea  rsi, [rip + search_count]
+    lea  rdx, [rip + dir_nodes]
+    call xapi_search_file
+    cmp  dword ptr [rip + search_count], 0
+    je   .fail
+
+    lea  rdi, [rip + fixture_path]
+    call sys_open_file
+    cmp  rax, -1
+    je   .fail
+    mov  r15, rax
+    mov  rdi, r15
+    lea  rsi, [rip + posix_read_buffer]
+    mov  edx, 6
+    call sys_read_file
+    cmp  rax, 6
+    jne  .fail
+    mov  rdi, r15
+    call sys_close_file
+    cmp  rax, 0
+    jne  .fail
+
+    lea  rdi, [rip + fixture_path]
+    lea  rsi, [rip + stat_buffer]
+    call sys_stat_file
+    cmp  rax, 0
+    jne  .fail
+
+    mov  rdi, ARCH_SET_FS
+    mov  rsi, 0x12345678
+    call sys_arch_prctl
+    cmp  rax, 0
+    jne  .fail
+    mov  rdi, ARCH_GET_FS
+    lea  rsi, [rip + fs_value]
+    call sys_arch_prctl
+    cmp  qword ptr [rip + fs_value], 0x12345678
+    jne  .fail
+
+    mov  rdi, 1
+    lea  rsi, [rip + write_msg]
+    mov  edx, 0
+    call sys_write_file
+    cmp  rax, 0
     jne  .fail
 
     lea  rdi, [rip + pass_msg]
@@ -198,6 +294,90 @@ xapi_read_file:
     add  rsp, 8
     ret
 
+xapi_search_file:
+    mov  rcx, rdx
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, X_SEARCH_FILE
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+sys_open_file:
+    mov  rsi, rdi
+    mov  rdi, SYS_OPEN
+    xor  edx, edx
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+sys_read_file:
+    mov  rcx, rdx
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, SYS_READ
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+sys_close_file:
+    mov  rsi, rdi
+    mov  rdi, SYS_CLOSE
+    xor  edx, edx
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+sys_stat_file:
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, SYS_STAT
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+sys_arch_prctl:
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, SYS_ARCH_PRCTL
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+sys_write_file:
+    mov  rcx, rdx
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, SYS_WRITE
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
 xapi_create_window:
     mov  rdx, rsi
     mov  rsi, rdi
@@ -228,6 +408,30 @@ xapi_set_msg_prcor:
     mov  rdi, X_SET_MSG_PRCOR
     xor  ecx, ecx
     xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+xapi_set_icon:
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, X_SET_ICON
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+xapi_draw_point:
+    mov  r8, rcx
+    mov  rcx, rdx
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, X_DRAW_POINT
     xor  r9d, r9d
     push 0
     call enter_syscall
@@ -278,6 +482,54 @@ xapi_read_buffer:
     mov  rdx, rsi
     mov  rsi, rdi
     mov  rdi, X_READ_BUFFER
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+xapi_output_serial:
+    mov  rsi, rdi
+    mov  rdi, X_OUTPUT_SERIAL
+    xor  edx, edx
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+xapi_get_current_user:
+    mov  rsi, rdi
+    mov  rdi, X_GET_CURRENT_USER
+    xor  edx, edx
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+xapi_user_oobe_required:
+    mov  rdi, X_USER_OOBE_REQUIRED
+    xor  esi, esi
+    xor  edx, edx
+    xor  ecx, ecx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
+    call enter_syscall
+    add  rsp, 8
+    ret
+
+xapi_get_pic_size:
+    mov  rcx, rdx
+    mov  rdx, rsi
+    mov  rsi, rdi
+    mov  rdi, X_GET_PIC_SIZE
+    xor  r8d, r8d
+    xor  r9d, r9d
+    push 0
     call enter_syscall
     add  rsp, 8
     ret
@@ -341,6 +593,14 @@ fixture_path:
     .asciz "/native_fixture.txt"
 relative_fixture_path:
     .asciz "native_fixture.txt"
+font_dir_path:
+    .asciz "/font/ttf"
+icon_path:
+    .asciz "/graphics/icon/terminal.png"
+serial_msg:
+    .asciz "native serial smoke"
+write_msg:
+    .asciz ""
 
     .data
     .align 8
@@ -350,6 +610,14 @@ window_width:
     .quad 0
 window_height:
     .quad 0
+fs_value:
+    .quad 0
+search_count:
+    .long 0
+picture_width:
+    .long 1
+picture_height:
+    .long 1
 native_window:
     .long 64
     .long 48
@@ -360,5 +628,13 @@ native_window:
     .align 8
 read_buffer:
     .skip 16
+posix_read_buffer:
+    .skip 16
 pixel_buffer:
     .skip 4
+current_user:
+    .skip 72
+stat_buffer:
+    .skip 256
+dir_nodes:
+    .skip 8192
