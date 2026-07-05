@@ -1,7 +1,7 @@
 /*
  * main.c — XJ380 模拟器 CLI 入口
  *
- * Usage: ./xswl <ELF file>
+ * Usage: ./xswl [--native|--unicorn] <ELF file>
  */
 
 #include "xj380_emu.h"
@@ -14,7 +14,7 @@
 int main(int argc, char **argv)
 {
     bool debug_enabled = true;
-    bool native_enabled = false;
+    bool native_enabled = true;
     const char *elf_path = NULL;
 
     for (int i = 1; i < argc; i++) {
@@ -22,13 +22,15 @@ int main(int argc, char **argv)
             debug_enabled = false;
         } else if (strcmp(argv[i], "--native") == 0) {
             native_enabled = true;
+        } else if (strcmp(argv[i], "--unicorn") == 0 || strcmp(argv[i], "--emu") == 0) {
+            native_enabled = false;
         } else if (!elf_path) {
             elf_path = argv[i];
         }
     }
 
     if (!elf_path) {
-        fprintf(stderr, "Usage: %s [--native] [nodebug|--nodebug] <XJ380 ELF File>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--native|--unicorn|--emu] [nodebug|--nodebug] <XJ380 ELF File>\n", argv[0]);
         return 1;
     }
 

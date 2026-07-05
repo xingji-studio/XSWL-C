@@ -145,7 +145,9 @@ _start:
     lea  rdi, [rip + relative_fixture_path]
     call xapi_open_file
     test rax, rax
-    jne  .fail
+    je   .fail
+    mov  rdi, rax
+    call xapi_close_file
 
     lea  rdi, [rip + fixture_path]
     call xapi_open_file

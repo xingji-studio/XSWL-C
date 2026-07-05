@@ -28,7 +28,7 @@ extern "C" {
 #define XJ380_HEAP_SIZE      0x1000000ULL  /* 16MB 堆                         */
 #define XJ380_TRAMP_BASE     0xFFFF0000ULL /* xapi trampoline 页              */
 #define XJ380_TRAMP_SIZE     0x10000ULL    /* 64KB，每个函数占 8 字节          */
-#define XJ380_VFS_BASE       0xFF000000ULL /* 虚拟文件系统映射区              */
+#define XJ380_VFS_BASE       0x100000000ULL /* 虚拟文件系统映射区             */
 
 /* XJ380 专有类型 (手册 1-3) */
 typedef int8_t   INT8;

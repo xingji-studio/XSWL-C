@@ -1168,6 +1168,66 @@ void xj380_gui_refresh_part(xj380_emu_t *emu, uint64_t handle,
 #define XJ380_MSG_RESIZE  8
 #define XJ380_MSG_KEYUP   9
 #define XJ380_MSG_KEYDOWN 10
+#define XJ380_GUI_EVENT_RETURN 0x70000000ULL
+#define XJ380_GUI_EVENT_STACK_TOP 0x70002000ULL
+
+typedef struct {
+    bool active;
+    uint64_t rax;
+    uint64_t rbx;
+    uint64_t rcx;
+    uint64_t rdx;
+    uint64_t rsi;
+    uint64_t rdi;
+    uint64_t rbp;
+    uint64_t rsp;
+    uint64_t r8;
+    uint64_t r9;
+    uint64_t r10;
+    uint64_t r11;
+    uint64_t r12;
+    uint64_t r13;
+    uint64_t r14;
+    uint64_t r15;
+    uint64_t rip;
+    uint64_t eflags;
+} gui_callback_context_t;
+
+static gui_callback_context_t g_gui_callback_context;
+
+static bool save_gui_callback_context(struct uc_struct *uc, uint64_t return_addr)
+{
+    if (g_gui_callback_context.active)
+    {
+        return false;
+    }
+
+    g_gui_callback_context.rip = return_addr;
+    if (uc_reg_read(uc, UC_X86_REG_RAX, &g_gui_callback_context.rax) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_RBX, &g_gui_callback_context.rbx) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_RCX, &g_gui_callback_context.rcx) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_RDX, &g_gui_callback_context.rdx) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_RSI, &g_gui_callback_context.rsi) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_RDI, &g_gui_callback_context.rdi) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_RBP, &g_gui_callback_context.rbp) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_RSP, &g_gui_callback_context.rsp) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_R8, &g_gui_callback_context.r8) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_R9, &g_gui_callback_context.r9) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_R10, &g_gui_callback_context.r10) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_R11, &g_gui_callback_context.r11) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_R12, &g_gui_callback_context.r12) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_R13, &g_gui_callback_context.r13) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_R14, &g_gui_callback_context.r14) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_R15, &g_gui_callback_context.r15) != UC_ERR_OK
+        || uc_reg_read(uc, UC_X86_REG_EFLAGS, &g_gui_callback_context.eflags) != UC_ERR_OK)
+    {
+        memset(&g_gui_callback_context, 0, sizeof(g_gui_callback_context));
+        return false;
+    }
+
+    g_gui_callback_context.active = true;
+    return true;
+}
 
 /* 事件队列 (最多缓存 64 个事件) */
 typedef struct {
@@ -1661,15 +1721,16 @@ bool xj380_gui_dispatch_queued_event(xj380_emu_t *emu, uint64_t return_addr)
             continue;
         }
 
-        uint64_t rsp = 0;
-        if (uc_reg_read(uc, UC_X86_REG_RSP, &rsp) != UC_ERR_OK || rsp < 8)
+        if (!save_gui_callback_context(uc, return_addr))
         {
             return false;
         }
 
-        rsp -= 8;
-        if (uc_mem_write(uc, rsp, &return_addr, sizeof(return_addr)) != UC_ERR_OK)
+        uint64_t rsp = XJ380_GUI_EVENT_STACK_TOP - 8U;
+        uint64_t event_return = XJ380_GUI_EVENT_RETURN;
+        if (uc_mem_write(uc, rsp, &event_return, sizeof(event_return)) != UC_ERR_OK)
         {
+            memset(&g_gui_callback_context, 0, sizeof(g_gui_callback_context));
             return false;
         }
 
@@ -1687,6 +1748,35 @@ bool xj380_gui_dispatch_queued_event(xj380_emu_t *emu, uint64_t return_addr)
     }
 
     return false;
+}
+
+void xj380_gui_finish_dispatched_event(xj380_emu_t *emu)
+{
+    if (!g_gui_callback_context.active)
+    {
+        return;
+    }
+
+    struct uc_struct *uc = xj380_get_uc(emu);
+    uc_reg_write(uc, UC_X86_REG_RAX, &g_gui_callback_context.rax);
+    uc_reg_write(uc, UC_X86_REG_RBX, &g_gui_callback_context.rbx);
+    uc_reg_write(uc, UC_X86_REG_RCX, &g_gui_callback_context.rcx);
+    uc_reg_write(uc, UC_X86_REG_RDX, &g_gui_callback_context.rdx);
+    uc_reg_write(uc, UC_X86_REG_RSI, &g_gui_callback_context.rsi);
+    uc_reg_write(uc, UC_X86_REG_RDI, &g_gui_callback_context.rdi);
+    uc_reg_write(uc, UC_X86_REG_RBP, &g_gui_callback_context.rbp);
+    uc_reg_write(uc, UC_X86_REG_RSP, &g_gui_callback_context.rsp);
+    uc_reg_write(uc, UC_X86_REG_R8, &g_gui_callback_context.r8);
+    uc_reg_write(uc, UC_X86_REG_R9, &g_gui_callback_context.r9);
+    uc_reg_write(uc, UC_X86_REG_R10, &g_gui_callback_context.r10);
+    uc_reg_write(uc, UC_X86_REG_R11, &g_gui_callback_context.r11);
+    uc_reg_write(uc, UC_X86_REG_R12, &g_gui_callback_context.r12);
+    uc_reg_write(uc, UC_X86_REG_R13, &g_gui_callback_context.r13);
+    uc_reg_write(uc, UC_X86_REG_R14, &g_gui_callback_context.r14);
+    uc_reg_write(uc, UC_X86_REG_R15, &g_gui_callback_context.r15);
+    uc_reg_write(uc, UC_X86_REG_RIP, &g_gui_callback_context.rip);
+    uc_reg_write(uc, UC_X86_REG_EFLAGS, &g_gui_callback_context.eflags);
+    memset(&g_gui_callback_context, 0, sizeof(g_gui_callback_context));
 }
 
 void xj380_gui_flush_events(xj380_emu_t *emu)

@@ -110,8 +110,73 @@ add_custom_target(xswl_run_gui_events
         LSAN_OPTIONS=detect_leaks=0
         XSWL_TEST_GUI_EVENTS=1
         $<TARGET_FILE:xswl>
+        --unicorn
         ${CMAKE_CURRENT_BINARY_DIR}/test_gui_events.elf
     DEPENDS xswl xswl_test_gui_events_file
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_gui_event_regs.elf
+    COMMAND ${CMAKE_C_COMPILER}
+        -m64 -nostdlib -static -no-pie
+        -Wl,-Ttext=0x200000
+        -o ${CMAKE_CURRENT_BINARY_DIR}/test_gui_event_regs.elf
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_gui_event_regs.S
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_gui_event_regs.S
+    VERBATIM
+)
+
+add_custom_target(xswl_test_gui_event_regs_file
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/test_gui_event_regs.elf
+)
+
+add_custom_target(xswl_run_gui_event_regs
+    COMMAND ${CMAKE_COMMAND} -E env
+        SDL_VIDEODRIVER=dummy
+        LSAN_OPTIONS=detect_leaks=0
+        XSWL_TEST_GUI_EVENTS=1
+        $<TARGET_FILE:xswl>
+        --unicorn
+        ${CMAKE_CURRENT_BINARY_DIR}/test_gui_event_regs.elf
+    DEPENDS xswl xswl_test_gui_event_regs_file
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_gui_large_file.elf
+    COMMAND ${CMAKE_C_COMPILER}
+        -m64 -nostdlib -static -no-pie
+        -Wl,-Ttext=0x200000
+        -o ${CMAKE_CURRENT_BINARY_DIR}/test_gui_large_file.elf
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_gui_large_file.S
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_gui_large_file.S
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/large_fixture.bin
+    COMMAND truncate -s 17825792 ${CMAKE_CURRENT_BINARY_DIR}/large_fixture.bin
+    VERBATIM
+)
+
+add_custom_target(xswl_test_gui_large_file_file
+    DEPENDS
+        ${CMAKE_CURRENT_BINARY_DIR}/test_gui_large_file.elf
+        ${CMAKE_CURRENT_BINARY_DIR}/large_fixture.bin
+)
+
+add_custom_target(xswl_run_gui_large_file
+    COMMAND ${CMAKE_COMMAND} -E env
+        SDL_VIDEODRIVER=dummy
+        LSAN_OPTIONS=detect_leaks=0
+        $<TARGET_FILE:xswl>
+        --unicorn
+        nodebug
+        ${CMAKE_CURRENT_BINARY_DIR}/test_gui_large_file.elf
+    DEPENDS xswl xswl_test_gui_large_file_file
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     VERBATIM
 )

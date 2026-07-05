@@ -29,7 +29,7 @@
 #define MAX_OPEN_FILES    256
 #define VFS_PATH_MAX      512
 #define MAX_WINDOWS       16
-#define VFS_ALLOC_SIZE    0x1000000ULL
+#define VFS_ALLOC_SIZE    0x80000000ULL
 #define MAX_ELF_PHDRS    128
 #define MAX_ELF_SEGMENTS 64
 #define MAX_ELF_LOAD_SIZE 0x40000000ULL
@@ -1241,6 +1241,17 @@ static bool invalid_mem_hook(uc_engine *uc, uc_mem_type type, uint64_t address,
     return false;
 }
 
+#ifdef XJ380_GUI
+static void gui_event_return_hook(uc_engine *uc, uint64_t addr, uint32_t size,
+    void *user_data)
+{
+    (void)uc;
+    (void)addr;
+    (void)size;
+    xj380_gui_finish_dispatched_event((xj380_emu_t *)user_data);
+}
+#endif
+
 /* ================================================================
  * xapi handler 注册表
  * ================================================================ */
@@ -1380,6 +1391,9 @@ static void h_OPENFILE(xj380_emu_t *e)
             buf = emu_vfs_alloc(e, ent->size);
             if (!buf || xj380_mem_write(e, buf, ent->data, ent->size) != 0)
             {
+                snprintf(e->error, sizeof(e->error),
+                    "OpenFile failed to map %zu-byte file into guest VFS",
+                    ent->size);
                 return;
             }
 
@@ -2210,6 +2224,12 @@ xj380_emu_t* xj380_create(void)
                       | UC_HOOK_MEM_FETCH_UNMAPPED,
                       (void*)invalid_mem_hook, emu,
                       (uint64_t)1, (uint64_t)0);
+#ifdef XJ380_GUI
+    uc_hook h_gui_event_return;
+    (void)uc_hook_add(emu->uc, &h_gui_event_return, UC_HOOK_CODE,
+                      (void*)gui_event_return_hook, emu,
+                      0x70000000ULL, 0x70000000ULL);
+#endif
     _Pragma("GCC diagnostic pop")
 
 #ifdef DEBUG_TRACE
@@ -2292,6 +2312,8 @@ int xj380_run(xj380_emu_t *emu, int host_argc, char **host_argv)
         if (err == UC_ERR_OK) {
             int ev = xj380_gui_poll_events(emu);
             if (ev == 2) { emu->running = false; break; }
+            uint64_t return_addr = r(emu, UC_X86_REG_RIP);
+            (void)xj380_gui_dispatch_queued_event(emu, return_addr);
             xj380_gui_render_all(emu);
         } else {
             snprintf(emu->error, sizeof(emu->error), "uc_emu_start: %s", uc_strerror(err));

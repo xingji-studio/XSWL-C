@@ -45,6 +45,8 @@ cmake --build build-dev
 
 ## Run
 
+By default, XSWL-C uses the native fast path:
+
 ```bash
 ./build/xswl <XJ380 ELF/EPF file>
 ```
@@ -55,11 +57,17 @@ Use `nodebug` or `--nodebug` before the program path to suppress debug logs:
 ./build/xswl nodebug ./app.elf
 ```
 
-Experimental native fast path:
+The old Unicorn emulation path is still available for compatibility:
 
 ```bash
-./build/xswl --native ./app.elf
+./build/xswl --unicorn ./app.elf
 ```
+
+`--emu` is accepted as an alias for `--unicorn`. `--native` can still be passed
+explicitly, but it is the default.
+
+Native mode is Linux-only. On Windows, run XSWL-C through WSL2 for native mode
+or use the Unicorn path for a portable emulator backend.
 
 Native mode maps static x86_64 XJ380 ELF programs into the host process and
 patches their `enter_syscall` symbol to call XSWL-C directly. It is still a
@@ -72,8 +80,8 @@ text/drawing no-ops, `ReadBuffer`, `WriteBuffer`, `RefreshWindow`, `FlushTime`,
 common system queries. POSIX coverage includes the small file, `pipe`,
 `select`, `writev`, `mmap`, `mprotect`, `munmap`, `getdents`, and `/dev/fb0`
 paths used by the current XJ380 demos. Guest-created files are mapped to
-private `/tmp/xswl-native-*` host files; relative guest paths are still
-rejected. Private terminal service calls used by XJ380's console startup are
+private `/tmp/xswl-native-*` host files; relative guest paths are resolved
+relative to the XJ380 program directory when possible. Private terminal service calls used by XJ380's console startup are
 simulated. Private installer service calls are also simulated, but installation
 and boot repair always fail safely so native mode never writes host disks.
 
@@ -84,7 +92,7 @@ window, `fork` returns failure to avoid duplicating GUI/window state.
 `Execve("/apps/system/shell.elf")` has a narrow compatibility path for XJ380's
 terminal launcher parent. Other exec calls and unsupported XAPI calls fail fast
 with a diagnostic instead of falling back inside the same process. Use the
-default Unicorn path for full compatibility.
+Unicorn path for compatibility checks.
 
 ## Test
 

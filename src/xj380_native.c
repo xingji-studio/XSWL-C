@@ -2,6 +2,8 @@
 
 #include "xj380_native.h"
 
+#include <SDL3/SDL.h>
+
 #include <errno.h>
 #include <limits.h>
 #include <setjmp.h>
@@ -69,6 +71,43 @@
 #define NATIVE_FBIOGET_FSCREENINFO 0x4602ULL
 #define NATIVE_FBIOPAN_DISPLAY 0x4606ULL
 
+#define NATIVE_MSG_KEYUP 9ULL
+#define NATIVE_MSG_KEYDOWN 10ULL
+
+#define NATIVE_XKEY_ESC 128
+#define NATIVE_XKEY_BACKSPACE 129
+#define NATIVE_XKEY_TAB 130
+#define NATIVE_XKEY_ENTER 131
+#define NATIVE_XKEY_CAPS 132
+#define NATIVE_XKEY_SHIFT 133
+#define NATIVE_XKEY_CTRL 134
+#define NATIVE_XKEY_ALT 135
+#define NATIVE_XKEY_SPACE 136
+#define NATIVE_XKEY_F1 137
+#define NATIVE_XKEY_F2 138
+#define NATIVE_XKEY_F3 139
+#define NATIVE_XKEY_F4 140
+#define NATIVE_XKEY_F5 141
+#define NATIVE_XKEY_F6 142
+#define NATIVE_XKEY_F7 143
+#define NATIVE_XKEY_F8 144
+#define NATIVE_XKEY_F9 145
+#define NATIVE_XKEY_F10 146
+#define NATIVE_XKEY_F11 147
+#define NATIVE_XKEY_F12 148
+#define NATIVE_XKEY_NUML 149
+#define NATIVE_XKEY_SCROLL 150
+#define NATIVE_XKEY_HOME 151
+#define NATIVE_XKEY_UP 152
+#define NATIVE_XKEY_PAGE_UP 153
+#define NATIVE_XKEY_LEFT 154
+#define NATIVE_XKEY_RIGHT 155
+#define NATIVE_XKEY_END 156
+#define NATIVE_XKEY_DOWN 157
+#define NATIVE_XKEY_PAGE_DOWN 158
+#define NATIVE_XKEY_INSERT 159
+#define NATIVE_XKEY_DELETE 160
+
 #define NATIVE_SIG_BLOCK 0ULL
 #define NATIVE_SIG_UNBLOCK 1ULL
 #define NATIVE_SIG_IGN 1ULL
@@ -91,6 +130,7 @@
 #define XAPI_GET_VERSION 7391ULL
 #define XAPI_CREATE_WINDOW 7392ULL
 #define XAPI_SET_WINDOW_TITLE 7393ULL
+#define XAPI_CLOSE_WINDOW 7394ULL
 #define XAPI_SET_ICON 7395ULL
 #define XAPI_DRAW_POINT 7396ULL
 #define XAPI_DRAW_LINE 7397ULL
@@ -237,13 +277,6 @@ typedef struct {
 } Elf64_Sym;
 
 typedef struct {
-    uint32_t width;
-    uint32_t height;
-    char *title;
-    uint8_t sets;
-} NativeXWindow;
-
-typedef struct {
     bool in_use;
     uint64_t handle;
     uint32_t width;
@@ -253,6 +286,10 @@ typedef struct {
     uint64_t msg_proc;
     bool dirty;
     uint64_t draw_count;
+    SDL_Window *sdl_window;
+    SDL_Renderer *renderer;
+    SDL_Texture *texture;
+    uint32_t *pixels;
 } NativeWindow;
 
 typedef struct {
@@ -479,11 +516,13 @@ static NativeInstallerProgress g_native_installer_progress;
 static NativeSigAction g_native_sigactions[NATIVE_MAX_SIGNALS];
 static uint64_t g_native_signal_mask;
 static uint64_t g_native_pending_signals;
+static bool g_native_sdl_initialized;
 
 static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
                                            uint64_t arg2, uint64_t arg3,
                                            uint64_t arg4, uint64_t arg5,
-                                           uint64_t arg6);
+                                           uint64_t arg6)
+    __attribute__((force_align_arg_pointer));
 
 static void native_set_error(const char *fmt, ...)
 {
@@ -594,19 +633,19 @@ static int native_try_system_font(char *host_path, size_t host_path_size,
 static int native_resolve_host_path(const char *vpath, char *host_path,
                                     size_t host_path_size)
 {
-    if (!vpath || vpath[0] != '/' || !host_path || host_path_size == 0)
+    if (!vpath || !host_path || host_path_size == 0)
     {
         return -1;
     }
 
-    const char *rel_path = vpath + 1;
+    const char *rel_path = vpath[0] == '/' ? vpath + 1 : vpath;
     if (rel_path[0] == '\0' || strstr(rel_path, ".."))
     {
         return -1;
     }
 
-    if (native_try_host_path(host_path, host_path_size, ".", rel_path) == 0
-        || native_try_host_path(host_path, host_path_size, g_native_app_dir, rel_path) == 0
+    if (native_try_host_path(host_path, host_path_size, g_native_app_dir, rel_path) == 0
+        || native_try_host_path(host_path, host_path_size, ".", rel_path) == 0
         || native_try_host_path(host_path, host_path_size, "../XJ380", rel_path) == 0
         || native_try_host_path(host_path, host_path_size, "../../XJ380", rel_path) == 0
         || native_try_system_font(host_path, host_path_size, rel_path) == 0)
@@ -1304,6 +1343,241 @@ static bool native_has_windows(void)
     return false;
 }
 
+static void native_destroy_window(NativeWindow *window)
+{
+    if (!window || !window->in_use)
+    {
+        return;
+    }
+
+    free(window->pixels);
+    window->pixels = NULL;
+    if (window->texture)
+    {
+        SDL_DestroyTexture(window->texture);
+        window->texture = NULL;
+    }
+    if (window->renderer)
+    {
+        SDL_DestroyRenderer(window->renderer);
+        window->renderer = NULL;
+    }
+    if (window->sdl_window)
+    {
+        SDL_DestroyWindow(window->sdl_window);
+        window->sdl_window = NULL;
+    }
+    memset(window, 0, sizeof(*window));
+}
+
+static void native_cleanup_windows(void)
+{
+    for (size_t i = 0; i < NATIVE_MAX_WINDOWS; i++)
+    {
+        native_destroy_window(&g_native_windows[i]);
+    }
+    if (g_native_sdl_initialized)
+    {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        g_native_sdl_initialized = false;
+    }
+}
+
+static bool native_init_sdl(void)
+{
+    if (g_native_sdl_initialized)
+    {
+        return true;
+    }
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
+    {
+        fprintf(stderr, "[native] SDL_InitSubSystem failed: %s\n", SDL_GetError());
+        return false;
+    }
+    g_native_sdl_initialized = true;
+    return true;
+}
+
+static int native_sdl_key_to_ascii(SDL_Keycode sym, SDL_Keymod mod)
+{
+    bool shift = (mod & SDL_KMOD_SHIFT) != 0;
+    bool caps = (mod & SDL_KMOD_CAPS) != 0;
+
+    if (sym >= SDLK_A && sym <= SDLK_Z)
+    {
+        int ch = 'a' + (int)(sym - SDLK_A);
+        if (shift != caps)
+        {
+            ch = ch - 'a' + 'A';
+        }
+        return ch;
+    }
+    if (sym >= SDLK_0 && sym <= SDLK_9)
+    {
+        static const char shifted[] = ")!@#$%^&*(";
+        return shift ? shifted[sym - SDLK_0] : (int)('0' + (sym - SDLK_0));
+    }
+
+    switch (sym)
+    {
+    case SDLK_SPACE: return ' ';
+    case SDLK_MINUS: return shift ? '_' : '-';
+    case SDLK_EQUALS: return shift ? '+' : '=';
+    case SDLK_LEFTBRACKET: return shift ? '{' : '[';
+    case SDLK_RIGHTBRACKET: return shift ? '}' : ']';
+    case SDLK_BACKSLASH: return shift ? '|' : '\\';
+    case SDLK_SEMICOLON: return shift ? ':' : ';';
+    case SDLK_APOSTROPHE: return shift ? '"' : '\'';
+    case SDLK_COMMA: return shift ? '<' : ',';
+    case SDLK_PERIOD: return shift ? '>' : '.';
+    case SDLK_SLASH: return shift ? '?' : '/';
+    case SDLK_GRAVE: return shift ? '~' : '`';
+    default: return -1;
+    }
+}
+
+static int native_sdl_key_to_xj380_key(SDL_Keycode sym, SDL_Keymod mod)
+{
+    switch (sym)
+    {
+    case SDLK_ESCAPE: return NATIVE_XKEY_ESC;
+    case SDLK_BACKSPACE: return '\b';
+    case SDLK_TAB: return NATIVE_XKEY_TAB;
+    case SDLK_RETURN: return '\n';
+    case SDLK_CAPSLOCK: return NATIVE_XKEY_CAPS;
+    case SDLK_LSHIFT:
+    case SDLK_RSHIFT: return NATIVE_XKEY_SHIFT;
+    case SDLK_LCTRL:
+    case SDLK_RCTRL: return NATIVE_XKEY_CTRL;
+    case SDLK_LALT:
+    case SDLK_RALT: return NATIVE_XKEY_ALT;
+    case SDLK_SPACE: return NATIVE_XKEY_SPACE;
+    case SDLK_F1: return NATIVE_XKEY_F1;
+    case SDLK_F2: return NATIVE_XKEY_F2;
+    case SDLK_F3: return NATIVE_XKEY_F3;
+    case SDLK_F4: return NATIVE_XKEY_F4;
+    case SDLK_F5: return NATIVE_XKEY_F5;
+    case SDLK_F6: return NATIVE_XKEY_F6;
+    case SDLK_F7: return NATIVE_XKEY_F7;
+    case SDLK_F8: return NATIVE_XKEY_F8;
+    case SDLK_F9: return NATIVE_XKEY_F9;
+    case SDLK_F10: return NATIVE_XKEY_F10;
+    case SDLK_F11: return NATIVE_XKEY_F11;
+    case SDLK_F12: return NATIVE_XKEY_F12;
+    case SDLK_NUMLOCKCLEAR: return NATIVE_XKEY_NUML;
+    case SDLK_SCROLLLOCK: return NATIVE_XKEY_SCROLL;
+    case SDLK_HOME: return NATIVE_XKEY_HOME;
+    case SDLK_UP: return NATIVE_XKEY_UP;
+    case SDLK_PAGEUP: return NATIVE_XKEY_PAGE_UP;
+    case SDLK_LEFT: return NATIVE_XKEY_LEFT;
+    case SDLK_RIGHT: return NATIVE_XKEY_RIGHT;
+    case SDLK_END: return NATIVE_XKEY_END;
+    case SDLK_DOWN: return NATIVE_XKEY_DOWN;
+    case SDLK_PAGEDOWN: return NATIVE_XKEY_PAGE_DOWN;
+    case SDLK_INSERT: return NATIVE_XKEY_INSERT;
+    case SDLK_DELETE: return NATIVE_XKEY_DELETE;
+    default: break;
+    }
+
+    return native_sdl_key_to_ascii(sym, mod);
+}
+
+static NativeWindow *native_find_window_by_sdl_id(SDL_WindowID window_id)
+{
+    for (size_t i = 0; i < NATIVE_MAX_WINDOWS; i++)
+    {
+        NativeWindow *window = &g_native_windows[i];
+        if (window->in_use && window->sdl_window
+            && SDL_GetWindowID(window->sdl_window) == window_id)
+        {
+            return window;
+        }
+    }
+    return NULL;
+}
+
+static void native_dispatch_window_msg(NativeWindow *window, uint64_t type,
+                                       uint64_t hdata, uint64_t ldata)
+{
+    if (!window || !window->msg_proc)
+    {
+        return;
+    }
+
+    void (*callback)(uint64_t, uint64_t, uint64_t) =
+        (void (*)(uint64_t, uint64_t, uint64_t))(uintptr_t)window->msg_proc;
+    callback(type, hdata, ldata);
+}
+
+static void native_poll_sdl_events(void)
+{
+    if (!g_native_sdl_initialized)
+    {
+        return;
+    }
+
+    SDL_Event event;
+    while (SDL_PollEvent(&event))
+    {
+        if (event.type == SDL_EVENT_QUIT)
+        {
+            g_exit_code = 0;
+            longjmp(g_exit_jmp, 1);
+        }
+        if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        {
+            NativeWindow *window = native_find_window_by_sdl_id(event.window.windowID);
+            if (window)
+            {
+                g_exit_code = 0;
+                longjmp(g_exit_jmp, 1);
+            }
+        }
+        if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP)
+        {
+            if (event.type == SDL_EVENT_KEY_DOWN && event.key.repeat)
+            {
+                continue;
+            }
+            NativeWindow *window = native_find_window_by_sdl_id(event.key.windowID);
+            int key = native_sdl_key_to_xj380_key(event.key.key, event.key.mod);
+            if (window && key >= 0)
+            {
+                native_dispatch_window_msg(window,
+                                           event.type == SDL_EVENT_KEY_DOWN
+                                               ? NATIVE_MSG_KEYDOWN
+                                               : NATIVE_MSG_KEYUP,
+                                           0,
+                                           (uint64_t)(uint8_t)key);
+            }
+        }
+    }
+}
+
+static uint64_t native_present_window(NativeWindow *window)
+{
+    if (!window)
+    {
+        return 0;
+    }
+    native_poll_sdl_events();
+    if (!window->renderer || !window->texture || !window->pixels)
+    {
+        window->dirty = false;
+        return 1;
+    }
+    if (window->dirty)
+    {
+        SDL_UpdateTexture(window->texture, NULL, window->pixels,
+                          (int)window->width * (int)sizeof(uint32_t));
+        window->dirty = false;
+    }
+    SDL_RenderClear(window->renderer);
+    SDL_RenderTexture(window->renderer, window->texture, NULL, NULL);
+    SDL_RenderPresent(window->renderer);
+    return 1;
+}
+
 static uint64_t native_fork_process(void)
 {
     if (native_has_windows())
@@ -1511,8 +1785,27 @@ static uint64_t native_create_window(uint64_t handle_ptr, uint64_t xwindow_ptr)
         return 0;
     }
 
-    NativeXWindow *window_info = (NativeXWindow *)(uintptr_t)xwindow_ptr;
+    const uint8_t *xwindow = (const uint8_t *)(uintptr_t)xwindow_ptr;
     uint64_t *out_handle = (uint64_t *)(uintptr_t)handle_ptr;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint64_t title_ptr = 0;
+    uint8_t sets = 0;
+    memcpy(&width, xwindow, sizeof(width));
+    memcpy(&height, xwindow + 4, sizeof(height));
+    memcpy(&title_ptr, xwindow + 8, sizeof(title_ptr));
+    sets = xwindow[16];
+
+    width = width ? width : 640U;
+    height = height ? height : 480U;
+    const char *title = title_ptr ? (const char *)(uintptr_t)title_ptr : "";
+    if (width > 4096U || height > 4096U || (size_t)width > SIZE_MAX / (size_t)height
+        || (size_t)width * (size_t)height > SIZE_MAX / sizeof(uint32_t))
+    {
+        *out_handle = 0;
+        return 0;
+    }
+    bool sdl_available = native_init_sdl();
 
     for (size_t i = 0; i < NATIVE_MAX_WINDOWS; i++)
     {
@@ -1529,10 +1822,67 @@ static uint64_t native_create_window(uint64_t handle_ptr, uint64_t xwindow_ptr)
         }
         window->in_use = true;
         window->handle = handle;
-        window->width = window_info->width;
-        window->height = window_info->height;
-        window->sets = window_info->sets;
-        window->title = window_info->title ? window_info->title : "";
+        window->width = width;
+        window->height = height;
+        window->sets = sets;
+        window->title = title;
+        SDL_WindowFlags sdl_flags = 0;
+        if (window->sets & 1U)
+        {
+            sdl_flags |= SDL_WINDOW_FULLSCREEN;
+        }
+        if (window->sets & 2U)
+        {
+            sdl_flags |= SDL_WINDOW_BORDERLESS;
+        }
+        if (window->sets & 4U)
+        {
+            sdl_flags |= SDL_WINDOW_RESIZABLE;
+        }
+        window->pixels = calloc((size_t)width * (size_t)height, sizeof(uint32_t));
+        if (!window->pixels)
+        {
+            native_destroy_window(window);
+            *out_handle = 0;
+            return 0;
+        }
+        if (sdl_available)
+        {
+            window->sdl_window = SDL_CreateWindow(window->title && window->title[0]
+                                                      ? window->title
+                                                      : "XJ380 Native",
+                                                  (int)width, (int)height, sdl_flags);
+            if (!window->sdl_window)
+            {
+                fprintf(stderr, "[native] SDL_CreateWindow failed: %s\n", SDL_GetError());
+            }
+            else
+            {
+                window->renderer = SDL_CreateRenderer(window->sdl_window, NULL);
+                if (!window->renderer)
+                {
+                    fprintf(stderr, "[native] SDL_CreateRenderer failed: %s\n",
+                            SDL_GetError());
+                }
+                else
+                {
+                    window->texture = SDL_CreateTexture(window->renderer,
+                                                        SDL_PIXELFORMAT_ARGB8888,
+                                                        SDL_TEXTUREACCESS_STREAMING,
+                                                        (int)width, (int)height);
+                    if (!window->texture)
+                    {
+                        fprintf(stderr, "[native] SDL_CreateTexture failed: %s\n",
+                                SDL_GetError());
+                    }
+                }
+            }
+        }
+        for (size_t p = 0; p < (size_t)width * (size_t)height; p++)
+        {
+            window->pixels[p] = 0xFF000000U;
+        }
+        window->dirty = true;
         *out_handle = handle;
 
         if (g_debug_enabled)
@@ -1555,6 +1905,17 @@ static uint64_t native_set_msg_prcor(uint64_t handle, uint64_t msg_proc)
         return 0;
     }
     window->msg_proc = msg_proc;
+    return 1;
+}
+
+static uint64_t native_close_window(uint64_t handle)
+{
+    NativeWindow *window = native_find_window(handle);
+    if (!window)
+    {
+        return 0;
+    }
+    native_destroy_window(window);
     return 1;
 }
 
@@ -1585,6 +1946,10 @@ static uint64_t native_set_window_title(uint64_t handle, uint64_t title_ptr)
         return 0;
     }
     window->title = title_ptr ? (const char *)(uintptr_t)title_ptr : "";
+    if (window->sdl_window)
+    {
+        SDL_SetWindowTitle(window->sdl_window, window->title);
+    }
     return 1;
 }
 
@@ -1970,8 +2335,7 @@ static uint64_t native_refresh_window(uint64_t handle)
     {
         return 0;
     }
-    window->dirty = false;
-    return 1;
+    return native_present_window(window);
 }
 
 static uint64_t native_read_buffer(uint64_t handle, uint64_t width,
@@ -1995,9 +2359,78 @@ static uint64_t native_read_buffer(uint64_t handle, uint64_t width,
     return 1;
 }
 
-static uint64_t native_write_buffer(uint64_t handle)
+static uint64_t native_write_buffer(uint64_t handle, uint64_t x, uint64_t y,
+                                    uint64_t width, uint64_t height,
+                                    uint64_t buffer_ptr,
+                                    size_t bytes_per_pixel)
 {
-    return native_find_window(handle) ? 1 : 0;
+    NativeWindow *window = native_find_window(handle);
+    if (!window || !buffer_ptr || !window->pixels || width == 0 || height == 0
+        || x >= window->width || y >= window->height)
+    {
+        return 0;
+    }
+
+    uint64_t copy_width = width;
+    uint64_t copy_height = height;
+    if (copy_width > (uint64_t)window->width - x)
+    {
+        copy_width = (uint64_t)window->width - x;
+    }
+    if (copy_height > (uint64_t)window->height - y)
+    {
+        copy_height = (uint64_t)window->height - y;
+    }
+    if (copy_width > (uint64_t)SIZE_MAX || copy_height > (uint64_t)SIZE_MAX
+        || (size_t)width > SIZE_MAX / bytes_per_pixel)
+    {
+        return 0;
+    }
+
+    const uint8_t *src = (const uint8_t *)(uintptr_t)buffer_ptr;
+    size_t src_stride = (size_t)width * bytes_per_pixel;
+    for (uint64_t row = 0; row < copy_height; row++)
+    {
+        uint32_t *dst = window->pixels
+            + ((size_t)y + (size_t)row) * (size_t)window->width
+            + (size_t)x;
+        const uint8_t *src_row = src + (size_t)row * src_stride;
+        for (uint64_t col = 0; col < copy_width; col++)
+        {
+            const uint8_t *px = src_row + (size_t)col * bytes_per_pixel;
+            uint8_t red = px[0];
+            uint8_t green = px[1];
+            uint8_t blue = px[2];
+            uint8_t alpha = bytes_per_pixel == 4U ? px[3] : 255U;
+            if (alpha == 255U)
+            {
+                dst[col] = 0xFF000000U
+                    | ((uint32_t)red << 16)
+                    | ((uint32_t)green << 8)
+                    | (uint32_t)blue;
+            }
+            else if (alpha != 0U)
+            {
+                uint32_t old = dst[col];
+                uint8_t old_r = (uint8_t)((old >> 16) & 0xFFU);
+                uint8_t old_g = (uint8_t)((old >> 8) & 0xFFU);
+                uint8_t old_b = (uint8_t)(old & 0xFFU);
+                uint8_t out_r = (uint8_t)(((uint32_t)red * alpha
+                    + (uint32_t)old_r * (255U - alpha)) / 255U);
+                uint8_t out_g = (uint8_t)(((uint32_t)green * alpha
+                    + (uint32_t)old_g * (255U - alpha)) / 255U);
+                uint8_t out_b = (uint8_t)(((uint32_t)blue * alpha
+                    + (uint32_t)old_b * (255U - alpha)) / 255U);
+                dst[col] = 0xFF000000U
+                    | ((uint32_t)out_r << 16)
+                    | ((uint32_t)out_g << 8)
+                    | (uint32_t)out_b;
+            }
+        }
+    }
+    window->dirty = true;
+    window->draw_count++;
+    return 1;
 }
 
 static uint64_t find_symbol(FILE *file, const Elf64_Ehdr *eh, const char *name)
@@ -2356,6 +2789,10 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     {
         return native_set_window_title(arg1, arg2);
     }
+    if (syscall_no == XAPI_CLOSE_WINDOW)
+    {
+        return native_close_window(arg1);
+    }
     if (syscall_no == XAPI_SET_ICON)
     {
         return native_find_window(arg1) ? 1 : 0;
@@ -2437,7 +2874,8 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     }
     if (syscall_no == XAPI_WRITE_BUFFER || syscall_no == XAPI_WRITE_BUFFER_A)
     {
-        return native_write_buffer(arg1);
+        return native_write_buffer(arg1, arg2, arg3, arg4, arg5, arg6,
+                                   syscall_no == XAPI_WRITE_BUFFER_A ? 4U : 3U);
     }
     if (syscall_no == XAPI_BUTTON || syscall_no == XAPI_BUTTON_EMP
         || syscall_no == XAPI_DELETE_BUTTON)
@@ -2470,16 +2908,19 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     }
     if (syscall_no == XAPI_FLUSH_TIME)
     {
+        native_poll_sdl_events();
         return 0;
     }
     if (syscall_no == XAPI_SLEEP)
     {
+        native_poll_sdl_events();
         uint64_t usec = arg1 > UINT64_MAX / 1000ULL ? UINT64_MAX : arg1 * 1000ULL;
         if (usec > 1000000ULL)
         {
             usec = 1000000ULL;
         }
         usleep((useconds_t)usec);
+        native_poll_sdl_events();
         return 0;
     }
     if (syscall_no == XAPI_USER_OOBE_REQUIRED)
@@ -2747,5 +3188,6 @@ int xj380_native_run(const char *path, int argc, char **argv, bool debug_enabled
         g_exit_code = returned;
     }
 
+    native_cleanup_windows();
     return g_exit_code;
 }

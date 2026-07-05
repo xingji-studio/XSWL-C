@@ -97,6 +97,7 @@ void xj380_gui_render_all(xj380_emu_t *emu);
 int  xj380_gui_window_count(void);
 void xj380_gui_flush_events(xj380_emu_t *emu);
 bool xj380_gui_dispatch_queued_event(xj380_emu_t *emu, uint64_t return_addr);
+void xj380_gui_finish_dispatched_event(xj380_emu_t *emu);
 void xj380_gui_store_callback(xj380_emu_t *emu, uint64_t handle, uint64_t func);
 void xj380_gui_load_font(const char *vpath, const uint8_t *data, size_t size);
 
