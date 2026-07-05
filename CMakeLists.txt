@@ -174,7 +174,7 @@ add_custom_target(xswl_run_gui_large_file
         LSAN_OPTIONS=detect_leaks=0
         $<TARGET_FILE:xswl>
         --unicorn
-        nodebug
+        --nodebug
         ${CMAKE_CURRENT_BINARY_DIR}/test_gui_large_file.elf
     DEPENDS xswl xswl_test_gui_large_file_file
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
@@ -210,7 +210,7 @@ add_custom_target(xswl_test_native_smoke_file
 add_custom_target(xswl_run_native_smoke
     COMMAND $<TARGET_FILE:xswl>
         --native
-        nodebug
+        --nodebug
         ${CMAKE_CURRENT_BINARY_DIR}/test_native_smoke.elf
     DEPENDS xswl xswl_test_native_smoke_file
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
@@ -235,7 +235,7 @@ add_custom_target(xswl_test_native_fork_file
 add_custom_target(xswl_run_native_fork
     COMMAND $<TARGET_FILE:xswl>
         --native
-        nodebug
+        --nodebug
         ${CMAKE_CURRENT_BINARY_DIR}/test_native_fork.elf
     DEPENDS xswl xswl_test_native_fork_file
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
@@ -260,7 +260,7 @@ add_custom_target(xswl_test_native_posix_file
 add_custom_target(xswl_run_native_posix
     COMMAND $<TARGET_FILE:xswl>
         --native
-        nodebug
+        --nodebug
         ${CMAKE_CURRENT_BINARY_DIR}/test_native_posix.elf
     DEPENDS xswl xswl_test_native_posix_file
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}

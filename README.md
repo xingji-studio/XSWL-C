@@ -51,10 +51,10 @@ By default, XSWL-C uses the native fast path:
 ./build/xswl <XJ380 ELF/EPF file>
 ```
 
-Use `nodebug` or `--nodebug` before the program path to suppress debug logs:
+Use `--nodebug` before the program path to suppress debug logs:
 
 ```bash
-./build/xswl nodebug ./app.elf
+./build/xswl --nodebug ./app.elf
 ```
 
 The old Unicorn emulation path is still available for compatibility:

@@ -50,10 +50,10 @@ XSWL-C 默认使用 native 快速路径：
 ./build/xswl <XJ380 ELF/EPF 文件>
 ```
 
-如果不想输出调试日志，可以在程序路径前加 `nodebug` 或 `--nodebug`：
+如果不想输出调试日志，可以在程序路径前加 `--nodebug`：
 
 ```bash
-./build/xswl nodebug ./app.elf
+./build/xswl --nodebug ./app.elf
 ```
 
 旧的 Unicorn 模拟路径仍然保留，用于兼容性检查：
