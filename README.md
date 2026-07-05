@@ -68,10 +68,11 @@ startup calls: `brk`, `Output`, `PrintLine`, `Exit`, `OpenFile`, `ReadFile`,
 `CloseFile`, `SearchFile`, selected POSIX read-only file calls, terminal input
 stubs, `CreateWindow`, `GetWindowSize`, `SetMsgPrcor`, `SetWindowTitle`, basic
 text/drawing no-ops, `ReadBuffer`, `WriteBuffer`, `RefreshWindow`, `FlushTime`,
-`Sleep`, and common system queries. Private terminal service calls used by
-XJ380's console startup are simulated. Private installer service calls are also
-simulated, but installation and boot repair always fail safely so native mode
-never writes host disks.
+`Sleep`, self-signal delivery for `rt_sigaction`/`rt_sigprocmask`/`kill`, and
+common system queries. Private terminal service calls used by XJ380's console
+startup are simulated. Private installer service calls are also simulated, but
+installation and boot repair always fail safely so native mode never writes host
+disks.
 
 Native `fork` is supported for non-GUI programs. `SYS_FORK` and `XAPI_FORK`
 return a child PID in the parent and `0` in the child; `SYS_WAIT4` can reap

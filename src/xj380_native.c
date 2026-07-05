@@ -27,6 +27,7 @@
 #define SYS_STAT 4ULL
 #define SYS_RT_SIGACTION 13ULL
 #define SYS_RT_SIGPROCMASK 14ULL
+#define SYS_RT_SIGRETURN 15ULL
 #define SYS_GETPID 39ULL
 #define SYS_SOCKET 41ULL
 #define SYS_FORK 57ULL
@@ -45,6 +46,11 @@
 #define SYS_CLOCK_GETTIME 228ULL
 #define ARCH_SET_FS 0x1002ULL
 #define ARCH_GET_FS 0x1003ULL
+
+#define NATIVE_SIG_BLOCK 0ULL
+#define NATIVE_SIG_UNBLOCK 1ULL
+#define NATIVE_SIG_IGN 1ULL
+#define NATIVE_MAX_SIGNALS 64U
 
 #define XAPI_PRINTLINE 7385ULL
 #define XAPI_OUTPUT 7381ULL
@@ -347,6 +353,13 @@ typedef struct {
     char lines[XJ380_INSTALLER_LOG_LINES][XJ380_INSTALLER_LOG_LEN];
 } NativeInstallerLog;
 
+typedef struct {
+    uint64_t handler;
+    uint64_t flags;
+    uint64_t restorer;
+    uint64_t mask;
+} NativeSigAction;
+
 #define NATIVE_MAX_WINDOWS 64U
 #define NATIVE_MAX_FDS 64U
 
@@ -364,6 +377,9 @@ static NativeWindow g_native_windows[NATIVE_MAX_WINDOWS];
 static uint64_t g_next_window_handle;
 static NativeFd g_native_fds[NATIVE_MAX_FDS];
 static NativeInstallerProgress g_native_installer_progress;
+static NativeSigAction g_native_sigactions[NATIVE_MAX_SIGNALS];
+static uint64_t g_native_signal_mask;
+static uint64_t g_native_pending_signals;
 
 static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
                                            uint64_t arg2, uint64_t arg3,
@@ -906,6 +922,117 @@ static uint64_t native_execve_process(uint64_t path_ptr)
     }
 
     return (uint64_t)-1;
+}
+
+static uint64_t native_current_pid(void)
+{
+    return g_native_is_fork_child ? (uint64_t)getpid() : 1;
+}
+
+static void native_deliver_signal(uint32_t sig)
+{
+    if (sig >= NATIVE_MAX_SIGNALS)
+    {
+        return;
+    }
+
+    NativeSigAction *action = &g_native_sigactions[sig];
+    if (action->handler == NATIVE_SIG_IGN)
+    {
+        return;
+    }
+    if (action->handler == 0)
+    {
+        if (g_native_is_fork_child)
+        {
+            _exit(128 + (int)sig);
+        }
+        g_exit_code = 128 + (int)sig;
+        longjmp(g_exit_jmp, 1);
+    }
+
+    void (*handler)(int) = (void (*)(int))(uintptr_t)action->handler;
+    handler((int)sig);
+}
+
+static void native_deliver_unblocked_pending(void)
+{
+    uint64_t deliverable = g_native_pending_signals & ~g_native_signal_mask;
+    while (deliverable)
+    {
+        uint32_t sig = (uint32_t)__builtin_ctzll(deliverable);
+        uint64_t bit = 1ULL << sig;
+        g_native_pending_signals &= ~bit;
+        native_deliver_signal(sig);
+        deliverable = g_native_pending_signals & ~g_native_signal_mask;
+    }
+}
+
+static uint64_t native_rt_sigaction(uint64_t sig_arg, uint64_t act_ptr,
+                                    uint64_t oldact_ptr)
+{
+    if (sig_arg >= NATIVE_MAX_SIGNALS)
+    {
+        return (uint64_t)-EINVAL;
+    }
+
+    NativeSigAction *slot = &g_native_sigactions[sig_arg];
+    if (oldact_ptr)
+    {
+        memcpy((void *)(uintptr_t)oldact_ptr, slot, sizeof(*slot));
+    }
+    if (act_ptr)
+    {
+        memcpy(slot, (const void *)(uintptr_t)act_ptr, sizeof(*slot));
+    }
+    return 0;
+}
+
+static uint64_t native_rt_sigprocmask(uint64_t how, uint64_t set_ptr,
+                                      uint64_t oldset_ptr)
+{
+    if (oldset_ptr)
+    {
+        *(uint64_t *)(uintptr_t)oldset_ptr = g_native_signal_mask;
+    }
+    if (!set_ptr)
+    {
+        return 0;
+    }
+
+    uint64_t set = *(const uint64_t *)(uintptr_t)set_ptr;
+    if (how == NATIVE_SIG_BLOCK)
+    {
+        g_native_signal_mask |= set;
+    }
+    else if (how == NATIVE_SIG_UNBLOCK)
+    {
+        g_native_signal_mask &= ~set;
+        native_deliver_unblocked_pending();
+    }
+    else
+    {
+        return (uint64_t)-EINVAL;
+    }
+    return 0;
+}
+
+static uint64_t native_kill_process(uint64_t pid_arg, uint64_t sig_arg)
+{
+    if (sig_arg >= NATIVE_MAX_SIGNALS || pid_arg != native_current_pid())
+    {
+        return (uint64_t)-1;
+    }
+
+    uint64_t bit = 1ULL << sig_arg;
+    if (g_native_signal_mask & bit)
+    {
+        g_native_pending_signals |= bit;
+        return 0;
+    }
+
+    native_deliver_signal((uint32_t)sig_arg);
+    return 0;
 }
 
 static uint64_t native_create_window(uint64_t handle_ptr, uint64_t xwindow_ptr)
@@ -1500,7 +1627,15 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     {
         return native_sys_stat(arg1, arg2);
     }
-    if (syscall_no == SYS_RT_SIGACTION || syscall_no == SYS_RT_SIGPROCMASK)
+    if (syscall_no == SYS_RT_SIGACTION)
+    {
+        return native_rt_sigaction(arg1, arg2, arg3);
+    }
+    if (syscall_no == SYS_RT_SIGPROCMASK)
+    {
+        return native_rt_sigprocmask(arg1, arg2, arg3);
+    }
+    if (syscall_no == SYS_RT_SIGRETURN)
     {
         return 0;
     }
@@ -1514,13 +1649,17 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     }
     if (syscall_no == SYS_GETPID)
     {
-        return g_native_is_fork_child ? (uint64_t)getpid() : 1;
+        return native_current_pid();
     }
     if (syscall_no == SYS_EXECVE)
     {
         return native_execve_process(arg1);
     }
-    if (syscall_no == SYS_SOCKET || syscall_no == SYS_KILL)
+    if (syscall_no == SYS_KILL)
+    {
+        return native_kill_process(arg1, arg2);
+    }
+    if (syscall_no == SYS_SOCKET)
     {
         return (uint64_t)-1;
     }
@@ -2023,6 +2162,10 @@ int xj380_native_run(const char *path, int argc, char **argv, bool debug_enabled
     memset(g_native_windows, 0, sizeof(g_native_windows));
     g_next_window_handle = 1;
     memset(g_native_fds, 0, sizeof(g_native_fds));
+    memset(&g_native_installer_progress, 0, sizeof(g_native_installer_progress));
+    memset(g_native_sigactions, 0, sizeof(g_native_sigactions));
+    g_native_signal_mask = 0;
+    g_native_pending_signals = 0;
     g_fs_base = 0;
 
     FILE *file = fopen(path, "rb");
