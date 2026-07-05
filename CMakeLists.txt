@@ -176,3 +176,28 @@ add_custom_target(xswl_run_native_fork
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     VERBATIM
 )
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_native_posix.elf
+    COMMAND ${CMAKE_C_COMPILER}
+        -m64 -nostdlib -static -no-pie
+        -Wl,-Ttext=0x200000
+        -o ${CMAKE_CURRENT_BINARY_DIR}/test_native_posix.elf
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_native_posix.S
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_native_posix.S
+    VERBATIM
+)
+
+add_custom_target(xswl_test_native_posix_file
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/test_native_posix.elf
+)
+
+add_custom_target(xswl_run_native_posix
+    COMMAND $<TARGET_FILE:xswl>
+        --native
+        nodebug
+        ${CMAKE_CURRENT_BINARY_DIR}/test_native_posix.elf
+    DEPENDS xswl xswl_test_native_posix_file
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    VERBATIM
+)

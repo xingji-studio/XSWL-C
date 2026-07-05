@@ -14,8 +14,10 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -25,9 +27,18 @@
 #define SYS_OPEN 2ULL
 #define SYS_CLOSE 3ULL
 #define SYS_STAT 4ULL
+#define SYS_FSTAT 5ULL
+#define SYS_LSEEK 8ULL
+#define SYS_MMAP 9ULL
+#define SYS_MPROTECT 10ULL
+#define SYS_MUNMAP 11ULL
 #define SYS_RT_SIGACTION 13ULL
 #define SYS_RT_SIGPROCMASK 14ULL
 #define SYS_RT_SIGRETURN 15ULL
+#define SYS_IOCTL 16ULL
+#define SYS_WRITEV 20ULL
+#define SYS_PIPE 22ULL
+#define SYS_SELECT 23ULL
 #define SYS_GETPID 39ULL
 #define SYS_SOCKET 41ULL
 #define SYS_FORK 57ULL
@@ -36,6 +47,8 @@
 #define SYS_KILL 62ULL
 #define SYS_GETCWD 79ULL
 #define SYS_CHDIR 80ULL
+#define SYS_GETDENTS 78ULL
+#define SYS_UNLINK 87ULL
 #define SYS_BRK 12ULL
 #define SYS_ARCH_PRCTL 158ULL
 #define SYS_GETUID 102ULL
@@ -44,8 +57,17 @@
 #define SYS_GETEGID 108ULL
 #define SYS_GETGROUPS 115ULL
 #define SYS_CLOCK_GETTIME 228ULL
+#define SYS_UTIMENSAT 280ULL
 #define ARCH_SET_FS 0x1002ULL
 #define ARCH_GET_FS 0x1003ULL
+
+#define NATIVE_FB_WIDTH 640U
+#define NATIVE_FB_HEIGHT 480U
+#define NATIVE_FB_BPP 32U
+#define NATIVE_FB_BYTES (NATIVE_FB_WIDTH * NATIVE_FB_HEIGHT * 2U * 4U)
+#define NATIVE_FBIOGET_VSCREENINFO 0x4600ULL
+#define NATIVE_FBIOGET_FSCREENINFO 0x4602ULL
+#define NATIVE_FBIOPAN_DISPLAY 0x4606ULL
 
 #define NATIVE_SIG_BLOCK 0ULL
 #define NATIVE_SIG_UNBLOCK 1ULL
@@ -238,9 +260,17 @@ typedef struct {
     void *buffer;
 } NativeXFile;
 
+typedef enum {
+    NATIVE_FD_UNUSED = 0,
+    NATIVE_FD_HOST,
+    NATIVE_FD_DIR_ROOT,
+    NATIVE_FD_FB,
+} NativeFdKind;
+
 typedef struct {
-    bool in_use;
-    FILE *file;
+    NativeFdKind kind;
+    int host_fd;
+    bool root_dir_sent;
 } NativeFd;
 
 typedef struct {
@@ -265,6 +295,75 @@ typedef struct {
     int32_t tm_yday;
     int32_t tm_isdst;
 } NativeTimeType;
+
+typedef struct {
+    uint64_t base;
+    uint64_t length;
+} NativeIovec;
+
+typedef struct {
+    int64_t d_ino;
+    int64_t d_off;
+    uint16_t d_reclen;
+    uint8_t d_type;
+    char d_name[256];
+} NativeDirent;
+
+typedef struct {
+    uint32_t offset;
+    uint32_t length;
+    uint32_t msb_right;
+} NativeFbBitfield;
+
+typedef struct {
+    char id[16];
+    uint64_t smem_start;
+    uint32_t smem_len;
+    uint32_t type;
+    uint32_t type_aux;
+    uint32_t visual;
+    uint16_t xpanstep;
+    uint16_t ypanstep;
+    uint16_t ywrapstep;
+    uint32_t line_length;
+    uint64_t mmio_start;
+    uint32_t mmio_len;
+    uint32_t accel;
+    uint16_t capabilities;
+    uint16_t reserved[2];
+} NativeFbFixScreeninfo;
+
+typedef struct {
+    uint32_t xres;
+    uint32_t yres;
+    uint32_t xres_virtual;
+    uint32_t yres_virtual;
+    uint32_t xoffset;
+    uint32_t yoffset;
+    uint32_t bits_per_pixel;
+    uint32_t grayscale;
+    NativeFbBitfield red;
+    NativeFbBitfield green;
+    NativeFbBitfield blue;
+    NativeFbBitfield transp;
+    uint32_t nonstd;
+    uint32_t activate;
+    uint32_t height;
+    uint32_t width;
+    uint32_t accel_flags;
+    uint32_t pixclock;
+    uint32_t left_margin;
+    uint32_t right_margin;
+    uint32_t upper_margin;
+    uint32_t lower_margin;
+    uint32_t hsync_len;
+    uint32_t vsync_len;
+    uint32_t sync;
+    uint32_t vmode;
+    uint32_t rotate;
+    uint32_t colorspace;
+    uint32_t reserved[4];
+} NativeFbVarScreeninfo;
 
 typedef struct {
     uint32_t id;
@@ -699,14 +798,15 @@ static uint64_t native_search_file(uint64_t path_ptr, uint64_t count_ptr,
     return count;
 }
 
-static int native_alloc_fd(FILE *file)
+static int native_alloc_fd(NativeFdKind kind, int host_fd)
 {
     for (size_t i = 0; i < NATIVE_MAX_FDS; i++)
     {
-        if (!g_native_fds[i].in_use)
+        if (g_native_fds[i].kind == NATIVE_FD_UNUSED)
         {
-            g_native_fds[i].in_use = true;
-            g_native_fds[i].file = file;
+            g_native_fds[i].kind = kind;
+            g_native_fds[i].host_fd = host_fd;
+            g_native_fds[i].root_dir_sent = false;
             return (int)i + 3;
         }
     }
@@ -721,10 +821,30 @@ static NativeFd *native_get_fd(uint64_t fd)
     }
 
     NativeFd *native_fd = &g_native_fds[fd - 3];
-    return native_fd->in_use ? native_fd : NULL;
+    return native_fd->kind != NATIVE_FD_UNUSED ? native_fd : NULL;
 }
 
-static uint64_t native_sys_open(uint64_t path_ptr)
+static int native_resolve_writable_host_path(const char *vpath, char *host_path,
+                                             size_t host_path_size)
+{
+    if (!vpath || vpath[0] != '/' || strstr(vpath, ".."))
+    {
+        return -1;
+    }
+
+    const char *name = strrchr(vpath, '/');
+    name = name ? name + 1 : vpath + 1;
+    if (name[0] == '\0' || strchr(name, '/'))
+    {
+        return -1;
+    }
+
+    int written = snprintf(host_path, host_path_size, "/tmp/xswl-native-%s", name);
+    return written >= 0 && (size_t)written < host_path_size ? 0 : -1;
+}
+
+static uint64_t native_sys_open(uint64_t path_ptr, uint64_t flags_arg,
+                                uint64_t mode_arg)
 {
     if (!path_ptr)
     {
@@ -732,22 +852,35 @@ static uint64_t native_sys_open(uint64_t path_ptr)
     }
 
     const char *vpath = (const char *)(uintptr_t)path_ptr;
+    int flags = (int)flags_arg;
+    mode_t mode = (mode_t)mode_arg;
+    if (strcmp(vpath, "/dev/fb0") == 0)
+    {
+        return (uint64_t)native_alloc_fd(NATIVE_FD_FB, -1);
+    }
+    if (strcmp(vpath, "/") == 0 && (flags & O_DIRECTORY))
+    {
+        return (uint64_t)native_alloc_fd(NATIVE_FD_DIR_ROOT, -1);
+    }
+
     char host_path[PATH_MAX];
-    if (native_resolve_host_path(vpath, host_path, sizeof(host_path)) != 0)
+    if (native_resolve_host_path(vpath, host_path, sizeof(host_path)) != 0
+        && (!(flags & O_CREAT)
+            || native_resolve_writable_host_path(vpath, host_path, sizeof(host_path)) != 0))
     {
         return (uint64_t)-1;
     }
 
-    FILE *file = fopen(host_path, "rb");
-    if (!file)
+    int host_fd = open(host_path, flags, mode);
+    if (host_fd < 0)
     {
         return (uint64_t)-1;
     }
 
-    int fd = native_alloc_fd(file);
+    int fd = native_alloc_fd(NATIVE_FD_HOST, host_fd);
     if (fd < 0)
     {
-        fclose(file);
+        close(host_fd);
         return (uint64_t)-1;
     }
     return (uint64_t)fd;
@@ -765,8 +898,37 @@ static uint64_t native_sys_read(uint64_t fd, uint64_t buffer_ptr, uint64_t size)
     {
         return (uint64_t)-1;
     }
-    return (uint64_t)fread((void *)(uintptr_t)buffer_ptr, 1, (size_t)size,
-                           native_fd->file);
+    if (native_fd->kind != NATIVE_FD_HOST)
+    {
+        return (uint64_t)-1;
+    }
+
+    ssize_t ret = read(native_fd->host_fd, (void *)(uintptr_t)buffer_ptr,
+                       (size_t)size);
+    return ret >= 0 ? (uint64_t)ret : (uint64_t)-1;
+}
+
+static uint64_t native_sys_write(uint64_t fd, uint64_t buffer_ptr, uint64_t size)
+{
+    if (!buffer_ptr || size > (uint64_t)SIZE_MAX)
+    {
+        return (uint64_t)-1;
+    }
+    if (fd == 1 || fd == 2)
+    {
+        FILE *out = fd == 2 ? stderr : stdout;
+        return (uint64_t)fwrite((const void *)(uintptr_t)buffer_ptr, 1,
+                                (size_t)size, out);
+    }
+
+    NativeFd *native_fd = native_get_fd(fd);
+    if (!native_fd || native_fd->kind != NATIVE_FD_HOST)
+    {
+        return (uint64_t)-1;
+    }
+    ssize_t ret = write(native_fd->host_fd, (const void *)(uintptr_t)buffer_ptr,
+                        (size_t)size);
+    return ret >= 0 ? (uint64_t)ret : (uint64_t)-1;
 }
 
 static uint64_t native_sys_close(uint64_t fd)
@@ -777,9 +939,13 @@ static uint64_t native_sys_close(uint64_t fd)
         return (uint64_t)-1;
     }
 
-    fclose(native_fd->file);
-    native_fd->file = NULL;
-    native_fd->in_use = false;
+    if (native_fd->kind == NATIVE_FD_HOST)
+    {
+        close(native_fd->host_fd);
+    }
+    native_fd->host_fd = -1;
+    native_fd->kind = NATIVE_FD_UNUSED;
+    native_fd->root_dir_sent = false;
     return 0;
 }
 
@@ -804,6 +970,309 @@ static uint64_t native_sys_stat(uint64_t path_ptr, uint64_t stat_ptr)
     }
     memcpy((void *)(uintptr_t)stat_ptr, &st, sizeof(st));
     return 0;
+}
+
+static uint64_t native_sys_fstat(uint64_t fd, uint64_t stat_ptr)
+{
+    if (!stat_ptr)
+    {
+        return (uint64_t)-1;
+    }
+
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    NativeFd *native_fd = native_get_fd(fd);
+    if (!native_fd)
+    {
+        return (uint64_t)-1;
+    }
+    if (native_fd->kind == NATIVE_FD_HOST)
+    {
+        if (fstat(native_fd->host_fd, &st) != 0)
+        {
+            return (uint64_t)-1;
+        }
+    }
+    else if (native_fd->kind == NATIVE_FD_DIR_ROOT)
+    {
+        st.st_mode = S_IFDIR | 0755;
+        st.st_nlink = 2;
+    }
+    else if (native_fd->kind == NATIVE_FD_FB)
+    {
+        st.st_mode = S_IFCHR | 0600;
+        st.st_size = NATIVE_FB_BYTES;
+    }
+    memcpy((void *)(uintptr_t)stat_ptr, &st, sizeof(st));
+    return 0;
+}
+
+static uint64_t native_sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence)
+{
+    NativeFd *native_fd = native_get_fd(fd);
+    if (!native_fd || native_fd->kind != NATIVE_FD_HOST)
+    {
+        return (uint64_t)-1;
+    }
+
+    off_t ret = lseek(native_fd->host_fd, (off_t)(int64_t)offset, (int)whence);
+    return ret >= 0 ? (uint64_t)ret : (uint64_t)-1;
+}
+
+static uint64_t native_sys_writev(uint64_t fd, uint64_t iov_ptr,
+                                  uint64_t iovcnt)
+{
+    if (!iov_ptr || iovcnt > 1024)
+    {
+        return (uint64_t)-1;
+    }
+
+    uint64_t total = 0;
+    NativeIovec *iov = (NativeIovec *)(uintptr_t)iov_ptr;
+    for (uint64_t i = 0; i < iovcnt; i++)
+    {
+        uint64_t written = native_sys_write(fd, iov[i].base, iov[i].length);
+        if (written == (uint64_t)-1)
+        {
+            return total ? total : (uint64_t)-1;
+        }
+        total += written;
+        if (written != iov[i].length)
+        {
+            break;
+        }
+    }
+    return total;
+}
+
+static uint64_t native_sys_pipe(uint64_t pipefd_ptr)
+{
+    if (!pipefd_ptr)
+    {
+        return (uint64_t)-1;
+    }
+
+    int host_pipe[2];
+    if (pipe(host_pipe) != 0)
+    {
+        return (uint64_t)-1;
+    }
+
+    int read_fd = native_alloc_fd(NATIVE_FD_HOST, host_pipe[0]);
+    int write_fd = native_alloc_fd(NATIVE_FD_HOST, host_pipe[1]);
+    if (read_fd < 0 || write_fd < 0)
+    {
+        if (read_fd >= 0)
+        {
+            native_sys_close((uint64_t)read_fd);
+        }
+        else
+        {
+            close(host_pipe[0]);
+        }
+        close(host_pipe[1]);
+        return (uint64_t)-1;
+    }
+
+    int *guest_pipe = (int *)(uintptr_t)pipefd_ptr;
+    guest_pipe[0] = read_fd;
+    guest_pipe[1] = write_fd;
+    return 0;
+}
+
+static bool native_fdset_isset(uint64_t set_ptr, int fd)
+{
+    uint64_t *bits = (uint64_t *)(uintptr_t)set_ptr;
+    return (bits[(unsigned)fd / 64U] & (1ULL << ((unsigned)fd % 64U))) != 0;
+}
+
+static void native_fdset_zero(uint64_t set_ptr)
+{
+    memset((void *)(uintptr_t)set_ptr, 0, 128);
+}
+
+static void native_fdset_set(uint64_t set_ptr, int fd)
+{
+    uint64_t *bits = (uint64_t *)(uintptr_t)set_ptr;
+    bits[(unsigned)fd / 64U] |= 1ULL << ((unsigned)fd % 64U);
+}
+
+static uint64_t native_sys_select(uint64_t nfds, uint64_t readfds_ptr,
+                                  uint64_t writefds_ptr, uint64_t exceptfds_ptr,
+                                  uint64_t timeout_ptr)
+{
+    (void)timeout_ptr;
+    uint64_t ready = 0;
+    uint8_t read_ready[128];
+    uint8_t write_ready[128];
+    memset(read_ready, 0, sizeof(read_ready));
+    memset(write_ready, 0, sizeof(write_ready));
+
+    for (uint64_t fd = 0; fd < nfds && fd < 1024; fd++)
+    {
+        NativeFd *native_fd = native_get_fd(fd);
+        if (!native_fd)
+        {
+            continue;
+        }
+        if (readfds_ptr && native_fdset_isset(readfds_ptr, (int)fd))
+        {
+            read_ready[fd / 8U] |= (uint8_t)(1U << (fd % 8U));
+            ready++;
+        }
+        if (writefds_ptr && native_fdset_isset(writefds_ptr, (int)fd))
+        {
+            write_ready[fd / 8U] |= (uint8_t)(1U << (fd % 8U));
+            ready++;
+        }
+    }
+
+    if (readfds_ptr)
+    {
+        native_fdset_zero(readfds_ptr);
+    }
+    if (writefds_ptr)
+    {
+        native_fdset_zero(writefds_ptr);
+    }
+    if (exceptfds_ptr)
+    {
+        native_fdset_zero(exceptfds_ptr);
+    }
+    for (uint64_t fd = 0; fd < nfds && fd < 1024; fd++)
+    {
+        if (readfds_ptr && (read_ready[fd / 8U] & (uint8_t)(1U << (fd % 8U))))
+        {
+            native_fdset_set(readfds_ptr, (int)fd);
+        }
+        if (writefds_ptr && (write_ready[fd / 8U] & (uint8_t)(1U << (fd % 8U))))
+        {
+            native_fdset_set(writefds_ptr, (int)fd);
+        }
+    }
+    return ready;
+}
+
+static uint64_t native_sys_getdents(uint64_t fd, uint64_t dents_ptr,
+                                    uint64_t size)
+{
+    if (!dents_ptr || size < sizeof(NativeDirent))
+    {
+        return (uint64_t)-1;
+    }
+
+    NativeFd *native_fd = native_get_fd(fd);
+    if (!native_fd || native_fd->kind != NATIVE_FD_DIR_ROOT)
+    {
+        return (uint64_t)-1;
+    }
+    if (native_fd->root_dir_sent)
+    {
+        return 0;
+    }
+
+    NativeDirent *dent = (NativeDirent *)(uintptr_t)dents_ptr;
+    memset(dent, 0, sizeof(*dent));
+    dent->d_ino = 1;
+    dent->d_off = 1;
+    dent->d_reclen = (uint16_t)sizeof(*dent);
+    dent->d_type = 4;
+    snprintf(dent->d_name, sizeof(dent->d_name), "%s", "apps");
+    native_fd->root_dir_sent = true;
+    return sizeof(*dent);
+}
+
+static uint64_t native_sys_unlink(uint64_t path_ptr)
+{
+    if (!path_ptr)
+    {
+        return (uint64_t)-1;
+    }
+
+    char host_path[PATH_MAX];
+    if (native_resolve_writable_host_path((const char *)(uintptr_t)path_ptr,
+                                          host_path, sizeof(host_path)) != 0)
+    {
+        return (uint64_t)-1;
+    }
+    return unlink(host_path) == 0 ? 0 : (uint64_t)-1;
+}
+
+static uint64_t native_sys_mmap(uint64_t addr, uint64_t length, uint64_t prot,
+                                uint64_t flags, uint64_t fd_arg,
+                                uint64_t offset)
+{
+    if (length == 0 || length > (uint64_t)SIZE_MAX)
+    {
+        return (uint64_t)-1;
+    }
+
+    int host_fd = -1;
+    NativeFd *native_fd = native_get_fd(fd_arg);
+    if (native_fd && native_fd->kind == NATIVE_FD_HOST)
+    {
+        host_fd = native_fd->host_fd;
+    }
+    else if (native_fd && native_fd->kind == NATIVE_FD_FB)
+    {
+        flags = MAP_PRIVATE | MAP_ANONYMOUS;
+        host_fd = -1;
+        offset = 0;
+    }
+    else if ((int64_t)fd_arg < 0)
+    {
+        host_fd = -1;
+    }
+    else
+    {
+        return (uint64_t)-1;
+    }
+
+    void *mapped = mmap(addr ? (void *)(uintptr_t)addr : NULL, (size_t)length,
+                        (int)prot, (int)flags, host_fd, (off_t)offset);
+    return mapped != MAP_FAILED ? (uint64_t)(uintptr_t)mapped : (uint64_t)-1;
+}
+
+static uint64_t native_sys_ioctl(uint64_t fd, uint64_t request, uint64_t arg_ptr)
+{
+    NativeFd *native_fd = native_get_fd(fd);
+    if (!native_fd || native_fd->kind != NATIVE_FD_FB || !arg_ptr)
+    {
+        return (uint64_t)-1;
+    }
+
+    if (request == NATIVE_FBIOGET_FSCREENINFO)
+    {
+        NativeFbFixScreeninfo *fix = (NativeFbFixScreeninfo *)(uintptr_t)arg_ptr;
+        memset(fix, 0, sizeof(*fix));
+        snprintf(fix->id, sizeof(fix->id), "%s", "xswlfb");
+        fix->smem_len = NATIVE_FB_BYTES;
+        fix->line_length = NATIVE_FB_WIDTH * 4U;
+        return 0;
+    }
+    if (request == NATIVE_FBIOGET_VSCREENINFO || request == NATIVE_FBIOPAN_DISPLAY)
+    {
+        NativeFbVarScreeninfo *var = (NativeFbVarScreeninfo *)(uintptr_t)arg_ptr;
+        if (request == NATIVE_FBIOGET_VSCREENINFO)
+        {
+            memset(var, 0, sizeof(*var));
+            var->xres = NATIVE_FB_WIDTH;
+            var->yres = NATIVE_FB_HEIGHT;
+            var->xres_virtual = NATIVE_FB_WIDTH;
+            var->yres_virtual = NATIVE_FB_HEIGHT * 2U;
+            var->bits_per_pixel = NATIVE_FB_BPP;
+            var->red.offset = 16;
+            var->red.length = 8;
+            var->green.offset = 8;
+            var->green.length = 8;
+            var->blue.offset = 0;
+            var->blue.length = 8;
+            var->transp.offset = 24;
+            var->transp.length = 8;
+        }
+        return 0;
+    }
+    return (uint64_t)-1;
 }
 
 static NativeWindow *native_find_window(uint64_t handle)
@@ -1608,16 +2077,11 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     }
     if (syscall_no == SYS_WRITE)
     {
-        if ((arg1 == 1 || arg1 == 2) && arg2 && arg3 <= (uint64_t)SIZE_MAX)
-        {
-            FILE *out = arg1 == 2 ? stderr : stdout;
-            return (uint64_t)fwrite((const void *)(uintptr_t)arg2, 1, (size_t)arg3, out);
-        }
-        return (uint64_t)-1;
+        return native_sys_write(arg1, arg2, arg3);
     }
     if (syscall_no == SYS_OPEN)
     {
-        return native_sys_open(arg1);
+        return native_sys_open(arg1, arg2, arg3);
     }
     if (syscall_no == SYS_CLOSE)
     {
@@ -1626,6 +2090,30 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     if (syscall_no == SYS_STAT)
     {
         return native_sys_stat(arg1, arg2);
+    }
+    if (syscall_no == SYS_FSTAT)
+    {
+        return native_sys_fstat(arg1, arg2);
+    }
+    if (syscall_no == SYS_LSEEK)
+    {
+        return native_sys_lseek(arg1, arg2, arg3);
+    }
+    if (syscall_no == SYS_MMAP)
+    {
+        return native_sys_mmap(arg1, arg2, arg3, arg4, arg5, arg6);
+    }
+    if (syscall_no == SYS_MPROTECT)
+    {
+        return mprotect((void *)(uintptr_t)arg1, (size_t)arg2, (int)arg3) == 0
+            ? 0
+            : (uint64_t)-1;
+    }
+    if (syscall_no == SYS_MUNMAP)
+    {
+        return munmap((void *)(uintptr_t)arg1, (size_t)arg2) == 0
+            ? 0
+            : (uint64_t)-1;
     }
     if (syscall_no == SYS_RT_SIGACTION)
     {
@@ -1638,6 +2126,22 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
     if (syscall_no == SYS_RT_SIGRETURN)
     {
         return 0;
+    }
+    if (syscall_no == SYS_IOCTL)
+    {
+        return native_sys_ioctl(arg1, arg2, arg3);
+    }
+    if (syscall_no == SYS_WRITEV)
+    {
+        return native_sys_writev(arg1, arg2, arg3);
+    }
+    if (syscall_no == SYS_PIPE)
+    {
+        return native_sys_pipe(arg1);
+    }
+    if (syscall_no == SYS_SELECT)
+    {
+        return native_sys_select(arg1, arg2, arg3, arg4, arg5);
     }
     if (syscall_no == SYS_FORK)
     {
@@ -1674,6 +2178,18 @@ static uint64_t xj380_native_enter_syscall(uint64_t syscall_no, uint64_t arg1,
         return arg1;
     }
     if (syscall_no == SYS_CHDIR)
+    {
+        return 0;
+    }
+    if (syscall_no == SYS_GETDENTS)
+    {
+        return native_sys_getdents(arg1, arg2, arg3);
+    }
+    if (syscall_no == SYS_UNLINK)
+    {
+        return native_sys_unlink(arg1);
+    }
+    if (syscall_no == SYS_UTIMENSAT)
     {
         return 0;
     }

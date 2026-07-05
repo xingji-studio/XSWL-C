@@ -65,14 +65,17 @@ Native mode maps static x86_64 XJ380 ELF programs into the host process and
 patches their `enter_syscall` symbol to call XSWL-C directly. It is still a
 compatibility subset, but now covers the native smoke path plus common GUI
 startup calls: `brk`, `Output`, `PrintLine`, `Exit`, `OpenFile`, `ReadFile`,
-`CloseFile`, `SearchFile`, selected POSIX read-only file calls, terminal input
-stubs, `CreateWindow`, `GetWindowSize`, `SetMsgPrcor`, `SetWindowTitle`, basic
+`CloseFile`, `SearchFile`, selected POSIX file calls, terminal input stubs,
+`CreateWindow`, `GetWindowSize`, `SetMsgPrcor`, `SetWindowTitle`, basic
 text/drawing no-ops, `ReadBuffer`, `WriteBuffer`, `RefreshWindow`, `FlushTime`,
 `Sleep`, self-signal delivery for `rt_sigaction`/`rt_sigprocmask`/`kill`, and
-common system queries. Private terminal service calls used by XJ380's console
-startup are simulated. Private installer service calls are also simulated, but
-installation and boot repair always fail safely so native mode never writes host
-disks.
+common system queries. POSIX coverage includes the small file, `pipe`,
+`select`, `writev`, `mmap`, `mprotect`, `munmap`, `getdents`, and `/dev/fb0`
+paths used by the current XJ380 demos. Guest-created files are mapped to
+private `/tmp/xswl-native-*` host files; relative guest paths are still
+rejected. Private terminal service calls used by XJ380's console startup are
+simulated. Private installer service calls are also simulated, but installation
+and boot repair always fail safely so native mode never writes host disks.
 
 Native `fork` is supported for non-GUI programs. `SYS_FORK` and `XAPI_FORK`
 return a child PID in the parent and `0` in the child; `SYS_WAIT4` can reap
@@ -89,6 +92,7 @@ default Unicorn path for full compatibility.
 cmake --build build --target xswl_run_gui_events
 cmake --build build --target xswl_run_native_smoke
 cmake --build build --target xswl_run_native_fork
+cmake --build build --target xswl_run_native_posix
 ```
 
 The GUI event test uses SDL's dummy video driver, so it can run without a
@@ -98,6 +102,9 @@ framebuffer no-op compatibility, `Sleep`, `PrintLine`, and `Exit`.
 The native fork test verifies terminal stubs, installer private syscall stubs,
 `SYS_GETGROUPS`, `SYS_FORK`, `XAPI_FORK`, `SYS_WAIT4`, child exit status, and
 the non-GUI fork path.
+The native POSIX test verifies writable temp files, `fstat`, `lseek`, `pipe`,
+`select`, anonymous `mmap`, memory protection calls, and the `/dev/fb0`
+`ioctl`/`mmap` compatibility path.
 
 ## Covered XAPI Areas
 
